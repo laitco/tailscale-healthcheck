@@ -10,6 +10,9 @@ COPY . /app
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && apt-get clean
+
 # Expose the port the app runs on
 EXPOSE 5000
 
