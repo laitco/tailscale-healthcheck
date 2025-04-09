@@ -67,6 +67,19 @@ The application is configured using environment variables:
 | `PORT`             | `5000`        | The port the application runs on.            |
 | `TIMEZONE`         | `UTC`         | The timezone for `lastSeen` adjustments.     |
 
+### Generating the Tailscale API Key
+
+To use this application, you need to generate a Tailscale API key:
+
+1. Visit the Tailscale Admin Console:  
+   [https://login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+
+2. Click **Generate Key** and copy the generated API key.
+
+3. Set the API key as the `AUTH_TOKEN` environment variable.
+
+**Note**: Ensure the API key is stored securely and not shared publicly.
+
 ## Running Locally
 
 1. **Clone the Repository**:
