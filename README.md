@@ -153,6 +153,47 @@ To use this application, you need to generate a Tailscale API key:
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
 
+## Integration with Gatus Monitoring System
+
+You can integrate this healthcheck application with the [Gatus](https://github.com/TwiN/gatus) monitoring system to monitor the health of specific devices.
+
+### Example Configuration
+
+```yaml
+endpoints:
+  - name: tailscale-examplehostname.example.com
+    group: tailscale
+    url: "http://IP-ADDRESS_OR_HOSTNAME:5000/health/examplehostname"
+    interval: 5m
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].healthy == pat(*true*)"
+    alerts:
+      - type: email
+        failure-threshold: 2
+        success-threshold: 3
+        description: "healthcheck failed"
+        send-on-resolved: true
+```
+
+### Explanation
+
+- **`name`**: A descriptive name for the endpoint being monitored.
+- **`group`**: A logical grouping for endpoints (e.g., `tailscale`).
+- **`url`**: The URL of the healthcheck endpoint for a specific device.
+- **`interval`**: The frequency of the healthcheck (e.g., every 5 minutes).
+- **`conditions`**:
+  - `[STATUS] == 200`: Ensures the HTTP status code is `200`.
+  - `[BODY].healthy == pat(*true*)`: Checks if the `healthy` field in the response body is `true`.
+- **`alerts`**:
+  - **`type`**: The type of alert (e.g., `email`).
+  - **`failure-threshold`**: The number of consecutive failures before triggering an alert.
+  - **`success-threshold`**: The number of consecutive successes before resolving an alert.
+  - **`description`**: A description of the alert.
+  - **`send-on-resolved`**: Whether to send a notification when the issue is resolved.
+
+For more details on configuring Gatus, refer to the [Gatus documentation](https://github.com/TwiN/gatus).
+
 ## Development
 
 ### Linting
