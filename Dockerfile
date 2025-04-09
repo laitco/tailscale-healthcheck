@@ -28,5 +28,5 @@ ENV FLASK_APP=healthcheck.py
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Run the application
-CMD ["python", "healthcheck.py"]
+# Run the application with Gunicorn
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "healthcheck:app"]
