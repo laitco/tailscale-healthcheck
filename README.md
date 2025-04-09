@@ -89,14 +89,16 @@ The application is configured using environment variables:
 4. **Access the Application**:
    Open your browser and navigate to:
    ```
-   http://localhost:5000/health
+   http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
 
 ## Running with Docker
 
+### Build and Run Locally
+
 1. **Build the Docker Image**:
    ```bash
-   docker build -t tailscale-healthcheck .
+   docker build -t laitco/tailscale-healthcheck .
    ```
 
 2. **Run the Docker Container**:
@@ -106,13 +108,36 @@ The application is configured using environment variables:
        -e TAILNET_DOMAIN="example.com" \
        -e THRESHOLD_MINUTES=5 \
        -e TIMEZONE="UTC" \
-       --name tailscale-healthcheck tailscale-healthcheck
+       --name tailscale-healthcheck laitco/tailscale-healthcheck
    ```
 
 3. **Access the Application**:
    Open your browser and navigate to:
    ```
-   http://localhost:5000/health
+   http://IP-ADDRESS_OR_HOSTNAME:5000/health
+   ```
+
+### Run from Docker Hub
+
+1. **Pull the Docker Image**:
+   ```bash
+   docker pull laitco/tailscale-healthcheck:latest
+   ```
+
+2. **Run the Docker Container**:
+   ```bash
+   docker run -d -p 5000:5000 \
+       --env-file .env \
+       -e TAILNET_DOMAIN="example.com" \
+       -e THRESHOLD_MINUTES=5 \
+       -e TIMEZONE="UTC" \
+       --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
+   ```
+
+3. **Access the Application**:
+   Open your browser and navigate to:
+   ```
+   http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
 
 ## Development
