@@ -13,7 +13,7 @@ app = Flask(__name__)
 app.url_map.strict_slashes = False  # Allow trailing slashes to be ignored
 
 # Load configuration from environment variables
-TAILNET_DOMAIN = os.getenv("TAILNET_DOMAIN", "example.com")  # Default to "laitco.de"
+TAILNET_DOMAIN = os.getenv("TAILNET_DOMAIN", "example.com")  # Default to "example.com"
 TAILSCALE_API_URL = f"https://api.tailscale.com/api/v2/tailnet/{TAILNET_DOMAIN}/devices"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your-default-token")
 THRESHOLD_MINUTES = int(os.getenv("THRESHOLD_MINUTES", 5))  # Default to 5 minutes
