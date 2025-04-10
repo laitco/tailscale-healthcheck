@@ -28,11 +28,14 @@ OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
 ACCESS_TOKEN = None
 TOKEN_RENEWAL_TIMER = None
 
+# Global variable to track if it's the initial token fetch
+IS_INITIAL_FETCH = True
+
 def fetch_oauth_token():
     """
     Fetches a new OAuth access token using the client ID and client secret.
     """
-    global ACCESS_TOKEN, TOKEN_RENEWAL_TIMER
+    global ACCESS_TOKEN, TOKEN_RENEWAL_TIMER, IS_INITIAL_FETCH
     try:
         response = requests.post(
             "https://api.tailscale.com/api/v2/oauth/token",
@@ -54,14 +57,17 @@ def fetch_oauth_token():
         TOKEN_RENEWAL_TIMER = Timer(50 * 60, fetch_oauth_token)
         TOKEN_RENEWAL_TIMER.start()
 
-        # Log the token renewal time in the configured timezone
-        try:
-            tz = pytz.timezone(TIMEZONE)
-            renewal_time = datetime.now(tz).isoformat()
-            logging.info(f"OAuth access token renewed at {renewal_time} ({TIMEZONE}).")
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone: {TIMEZONE}. Logging renewal time in UTC.")
-            logging.info(f"OAuth access token renewed at {datetime.utcnow().isoformat()} UTC.")
+        # Log the token renewal time only if it's not the initial fetch
+        if not IS_INITIAL_FETCH:
+            try:
+                tz = pytz.timezone(TIMEZONE)
+                renewal_time = datetime.now(tz).isoformat()
+                logging.info(f"OAuth access token renewed at {renewal_time} ({TIMEZONE}).")
+            except pytz.UnknownTimeZoneError:
+                logging.error(f"Unknown timezone: {TIMEZONE}. Logging renewal time in UTC.")
+                logging.info(f"OAuth access token renewed at {datetime.utcnow().isoformat()} UTC.")
+        else:
+            IS_INITIAL_FETCH = False  # Mark the initial fetch as complete
     except requests.exceptions.HTTPError as http_err:
         logging.error(f"HTTP error during token fetch: {http_err}")
         if response.status_code == 401:
@@ -89,6 +95,25 @@ if os.getenv("GUNICORN_MASTER_PROCESS", "false").lower() == "true":
 # Log the configured timezone
 logging.debug(f"Configured TIMEZONE: {TIMEZONE}")
 
+def make_authenticated_request(url, headers):
+    """
+    Makes an authenticated request to the given URL and handles 401 errors by refreshing the token.
+    """
+    global ACCESS_TOKEN
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 401:
+            logging.error("Unauthorized error (401). Attempting to refresh OAuth token...")
+            fetch_oauth_token()  # Immediately refresh the token
+            if ACCESS_TOKEN:  # Retry the request with the new token
+                headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
+                response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response
+    except Exception as e:
+        logging.error(f"Error during authenticated request: {e}")
+        raise
+
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
@@ -98,12 +123,8 @@ def health_check():
         else:
             auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
 
-        # Fetch data from Tailscale API
-        response = requests.get(
-            TAILSCALE_API_URL,
-            headers=auth_header
-        )
-        response.raise_for_status()
+        # Fetch data from Tailscale API using the helper function
+        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
         devices = response.json().get("devices", [])
 
         # Get the timezone object
@@ -154,12 +175,8 @@ def health_check_by_identifier(identifier):
         else:
             auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
 
-        # Fetch data from Tailscale API
-        response = requests.get(
-            TAILSCALE_API_URL,
-            headers=auth_header
-        )
-        response.raise_for_status()
+        # Fetch data from Tailscale API using the helper function
+        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
         devices = response.json().get("devices", [])
 
         # Get the timezone object
@@ -212,12 +229,8 @@ def health_check_unhealthy():
         else:
             auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
 
-        # Fetch data from Tailscale API
-        response = requests.get(
-            TAILSCALE_API_URL,
-            headers=auth_header
-        )
-        response.raise_for_status()
+        # Fetch data from Tailscale API using the helper function
+        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
         devices = response.json().get("devices", [])
 
         # Get the timezone object
@@ -264,12 +277,8 @@ def health_check_healthy():
         else:
             auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
 
-        # Fetch data from Tailscale API
-        response = requests.get(
-            TAILSCALE_API_URL,
-            headers=auth_header
-        )
-        response.raise_for_status()
+        # Fetch data from Tailscale API using the helper function
+        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
         devices = response.json().get("devices", [])
 
         # Get the timezone object
