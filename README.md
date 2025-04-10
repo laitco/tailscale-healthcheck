@@ -1,4 +1,4 @@
-# Tailscale Healthcheck
+# Tailscale Healthcheck – A Dockerized Monitoring Helper Tool
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
@@ -9,6 +9,19 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Healthy Devices**: List all healthy devices.
 - **Unhealthy Devices**: List all unhealthy devices.
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
+
+## Release Notes
+
+### 1.1
+- Added support for Tailscale OAuth Client authentication.
+- OAuth tokens are automatically renewed every 50 minutes.
+- Improved logging to include token renewal times in the configured timezone.
+
+### 1.0
+- Initial release of the Tailscale Healthcheck application.
+- Supports health checks for all devices, specific devices, healthy devices, and unhealthy devices.
+- Includes timezone support for `lastSeen` timestamps.
+- Dockerized for easy deployment.
 
 ## Endpoints
 
@@ -59,17 +72,49 @@ Returns a list of all unhealthy devices.
 
 The application is configured using environment variables:
 
-| Variable           | Default Value | Description                                   |
-|--------------------|---------------|-----------------------------------------------|
-| `TAILNET_DOMAIN`   | `example.com` | The Tailscale tailnet domain.                |
-| `AUTH_TOKEN`       | None          | The Tailscale API token (required).          |
-| `THRESHOLD_MINUTES`| `5`           | The threshold in minutes to determine health.|
-| `PORT`             | `5000`        | The port the application runs on.            |
-| `TIMEZONE`         | `UTC`         | The timezone for `lastSeen` adjustments.     |
+| Variable             | Default Value      | Description                                                                 |
+|----------------------|--------------------|-----------------------------------------------------------------------------|
+| `TAILNET_DOMAIN`     | `example.com`     | The Tailscale tailnet domain.                                              |
+| `AUTH_TOKEN`         | None              | The Tailscale API token (required if OAuth is not configured).             |
+| `OAUTH_CLIENT_ID`    | None              | The OAuth client ID (required if using OAuth).                             |
+| `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
+| `THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine health.                              |
+| `PORT`               | `5000`            | The port the application runs on.                                          |
+| `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
+
+### Using OAuth for Authentication
+
+If you prefer to use OAuth instead of an API token (`AUTH_TOKEN`), configure the following environment variables:
+
+1. **`OAUTH_CLIENT_ID`**: The client ID for your OAuth application.
+2. **`OAUTH_CLIENT_SECRET`**: The client secret for your OAuth application.
+
+When OAuth is configured, the application will automatically fetch an access token from the Tailscale API and use it for authentication. The access token is renewed every 50 minutes to ensure uninterrupted operation.
+
+**Note**: If both `AUTH_TOKEN` and OAuth credentials are configured, OAuth will take priority.
+
+**Recommendation**: It is highly recommended to use OAuth for authentication instead of an API token (`AUTH_TOKEN`) for better security and token management.
+
+### Creating a Tailscale OAuth Client (RECOMMENDED)
+
+To use OAuth, you need to create a Tailscale OAuth client with the required permissions:
+
+1. Visit the Tailscale Admin Console:  
+   [https://login.tailscale.com/admin/settings/oauth](https://login.tailscale.com/admin/settings/oauth)
+
+2. Click **Create OAuth Client** and configure the following:
+   - **Name**: Provide a descriptive name for the client (e.g., `Tailscale Healthcheck`).
+   - **Permissions**: Grant `read` permissions on `devices:core`.
+
+3. Copy the generated **Client ID** and **Client Secret**.
+
+4. Set the `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` environment variables in your `.env` file or Docker configuration.
+
+**Note**: Ensure the OAuth client credentials are stored securely and not shared publicly.
 
 ### Generating the Tailscale API Key
 
-To use this application, you need to generate a Tailscale API key:
+To use this application with an API token, you need to generate a Tailscale API key:
 
 1. Visit the Tailscale Admin Console:  
    [https://login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)

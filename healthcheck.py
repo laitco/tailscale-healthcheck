@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, redirect
 import pytz
 import logging  # Add logging for debugging
+from threading import Timer  # For token renewal
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -19,16 +20,81 @@ THRESHOLD_MINUTES = int(os.getenv("THRESHOLD_MINUTES", 5))  # Default to 5 minut
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 
+# Load OAuth configuration from environment variables
+OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
+OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
+
+# Global variable to store the OAuth access token and timer
+ACCESS_TOKEN = None
+TOKEN_RENEWAL_TIMER = None
+
+def fetch_oauth_token():
+    """
+    Fetches a new OAuth access token using the client ID and client secret.
+    """
+    global ACCESS_TOKEN, TOKEN_RENEWAL_TIMER
+    try:
+        response = requests.post(
+            "https://api.tailscale.com/api/v2/oauth/token",
+            data={
+                "client_id": OAUTH_CLIENT_ID,
+                "client_secret": OAUTH_CLIENT_SECRET
+            }
+        )
+        response.raise_for_status()
+        token_data = response.json()
+        ACCESS_TOKEN = token_data["access_token"]
+        logging.info("Successfully fetched OAuth access token.")
+
+        # Cancel any existing timer before scheduling a new one
+        if TOKEN_RENEWAL_TIMER:
+            TOKEN_RENEWAL_TIMER.cancel()
+
+        # Schedule the next token renewal after 50 minutes
+        TOKEN_RENEWAL_TIMER = Timer(50 * 60, fetch_oauth_token)
+        TOKEN_RENEWAL_TIMER.start()
+
+        # Log the token renewal time in the configured timezone
+        try:
+            tz = pytz.timezone(TIMEZONE)
+            renewal_time = datetime.now(tz).isoformat()
+            logging.info(f"OAuth access token renewed at {renewal_time} ({TIMEZONE}).")
+        except pytz.UnknownTimeZoneError:
+            logging.error(f"Unknown timezone: {TIMEZONE}. Logging renewal time in UTC.")
+            logging.info(f"OAuth access token renewed at {datetime.utcnow().isoformat()} UTC.")
+    except Exception as e:
+        logging.error(f"Failed to fetch OAuth access token: {e}")
+        ACCESS_TOKEN = None
+
+def initialize_oauth():
+    """
+    Initializes OAuth token fetching if OAuth is configured.
+    This function should only be called once during the master process initialization.
+    """
+    if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET:
+        logging.info("OAuth configuration detected. Fetching initial access token...")
+        fetch_oauth_token()
+
+# Only initialize OAuth in the Gunicorn master process
+if os.getenv("GUNICORN_MASTER_PROCESS", "false").lower() == "true":
+    initialize_oauth()
+
 # Log the configured timezone
 logging.debug(f"Configured TIMEZONE: {TIMEZONE}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
+        # Determine the authorization method
+        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        else:
+            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
         # Fetch data from Tailscale API
         response = requests.get(
             TAILSCALE_API_URL,
-            headers={"Authorization": f"Bearer {AUTH_TOKEN}"}
+            headers=auth_header
         )
         response.raise_for_status()
         devices = response.json().get("devices", [])
@@ -75,10 +141,16 @@ def health_check_redirect():
 @app.route('/health/<identifier>', methods=['GET'])
 def health_check_by_identifier(identifier):
     try:
+        # Determine the authorization method
+        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        else:
+            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
         # Fetch data from Tailscale API
         response = requests.get(
             TAILSCALE_API_URL,
-            headers={"Authorization": f"Bearer {AUTH_TOKEN}"}
+            headers=auth_header
         )
         response.raise_for_status()
         devices = response.json().get("devices", [])
@@ -127,10 +199,16 @@ def health_check_by_identifier(identifier):
 @app.route('/health/unhealthy', methods=['GET'])
 def health_check_unhealthy():
     try:
+        # Determine the authorization method
+        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        else:
+            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
         # Fetch data from Tailscale API
         response = requests.get(
             TAILSCALE_API_URL,
-            headers={"Authorization": f"Bearer {AUTH_TOKEN}"}
+            headers=auth_header
         )
         response.raise_for_status()
         devices = response.json().get("devices", [])
@@ -173,10 +251,16 @@ def health_check_unhealthy():
 @app.route('/health/healthy', methods=['GET'])
 def health_check_healthy():
     try:
+        # Determine the authorization method
+        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        else:
+            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
         # Fetch data from Tailscale API
         response = requests.get(
             TAILSCALE_API_URL,
-            headers={"Authorization": f"Bearer {AUTH_TOKEN}"}
+            headers=auth_header
         )
         response.raise_for_status()
         devices = response.json().get("devices", [])
