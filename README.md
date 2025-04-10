@@ -34,6 +34,11 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## 📝 Release Notes
 
+### 1.1.3
+- Added `worker_exit` hook in Gunicorn to log worker exits and confirm restarts.
+- Enhanced error handling for `RemoteDisconnected` and `ProtocolError` in `make_authenticated_request` to retry requests instead of crashing workers.
+- Improved logging for better debugging of worker lifecycle and connection issues.
+
 ### 1.1.2
 - Updated GitHub Actions workflow to include validation on publishing of Docker containers
 

@@ -19,11 +19,17 @@ def on_starting(server):
     else:
         logging.info("Gunicorn master process starting. Using AUTH_TOKEN for authentication. Skipping OAuth initialization.")
 
+def worker_exit(server, worker):
+    """
+    Hook to log when a worker exits.
+    """
+    logging.warning(f"Worker {worker.pid} exited. Gunicorn will attempt to restart it.")
+
 def worker_abort(worker):
     """
     Hook to handle worker aborts gracefully.
     """
-    logging.error(f"Worker {worker.pid} aborted unexpectedly.")
+    logging.error(f"Worker {worker.pid} aborted unexpectedly. Gunicorn will restart it if possible.")
 
 def post_request(worker, req, environ, resp):
     """

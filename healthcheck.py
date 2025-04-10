@@ -5,6 +5,8 @@ from flask import Flask, jsonify, redirect
 import pytz
 import logging  # Add logging for debugging
 from threading import Timer  # For token renewal
+from urllib3.exceptions import ProtocolError  # Add import for better error handling
+from http.client import RemoteDisconnected  # Add import for better error handling
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -110,6 +112,9 @@ def make_authenticated_request(url, headers):
                 response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response
+    except (RemoteDisconnected, ProtocolError) as e:
+        logging.error(f"Connection error during authenticated request: {e}. Retrying...")
+        return make_authenticated_request(url, headers)  # Retry the request
     except Exception as e:
         logging.error(f"Error during authenticated request: {e}")
         raise
