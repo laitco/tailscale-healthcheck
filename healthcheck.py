@@ -62,6 +62,13 @@ def fetch_oauth_token():
         except pytz.UnknownTimeZoneError:
             logging.error(f"Unknown timezone: {TIMEZONE}. Logging renewal time in UTC.")
             logging.info(f"OAuth access token renewed at {datetime.utcnow().isoformat()} UTC.")
+    except requests.exceptions.HTTPError as http_err:
+        logging.error(f"HTTP error during token fetch: {http_err}")
+        if response.status_code == 401:
+            logging.error("Unauthorized error (401). Retrying token fetch...")
+            ACCESS_TOKEN = None
+        else:
+            logging.error(f"Unexpected HTTP error: {response.status_code}")
     except Exception as e:
         logging.error(f"Failed to fetch OAuth access token: {e}")
         ACCESS_TOKEN = None

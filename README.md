@@ -12,6 +12,11 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## Release Notes
 
+### 1.1.1
+- Fixed OAuth token renewal timer to ensure proper scheduling and retry logic.
+- Improved error handling for token renewal failures, including handling 401 Unauthorized errors.
+- Enhanced logging for better debugging and monitoring of token renewal.
+
 ### 1.1
 - Added support for Tailscale OAuth Client authentication.
 - OAuth tokens are automatically renewed every 50 minutes.

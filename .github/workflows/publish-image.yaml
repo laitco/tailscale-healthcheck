@@ -23,10 +23,10 @@ jobs:
         run: |
           docker push laitco/tailscale-healthcheck:latest
 
-      - name: Build Docker image 1.1
+      - name: Build Docker image 1.1.1
         run: |
-          docker build -t laitco/tailscale-healthcheck:1.0 .
+          docker build -t laitco/tailscale-healthcheck:1.1.1 .
 
-      - name: Push Docker image 1.1
+      - name: Push Docker image 1.1.1
         run: |
-          docker push laitco/tailscale-healthcheck:1.0
+          docker push laitco/tailscale-healthcheck:1.1.1
