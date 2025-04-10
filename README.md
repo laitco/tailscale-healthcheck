@@ -17,7 +17,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - [🐳 Running with Docker](#-running-with-docker)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
-- [Integration with Gatus Monitoring System](#integration-with-gatus-monitoring-system)
+- [📡 Integration with Gatus Monitoring System](#integration-with-gatus-monitoring-system)
 - [🔧 Development](#-development)
   - [Linting](#linting)
   - [Testing](#testing)
@@ -235,7 +235,7 @@ docker run -d -p 5000:5000 \
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
 
-## Integration with Gatus Monitoring System
+## 📡 Integration with Gatus Monitoring System
 
 You can integrate this healthcheck application with the [Gatus](https://github.com/TwiN/gatus) monitoring system to monitor the health of specific devices.
 
