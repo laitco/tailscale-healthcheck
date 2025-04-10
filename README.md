@@ -2,6 +2,28 @@
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
+## 📖 Table of Contents
+- [🌟 Features](#-features)
+- [📝 Release Notes](#-release-notes)
+- [📡 Endpoints](#-endpoints)
+  - [`/health`](#health)
+  - [`/health/<identifier>`](#healthidentifier)
+  - [`/health/healthy`](#healthhealthy)
+  - [`/health/unhealthy`](#healthunhealthy)
+- [⚙️ Configuration](#️-configuration)
+  - [Using OAuth for Authentication](#using-oauth-for-authentication-recommended)
+  - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
+  - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
+- [🐳 Running with Docker](#-running-with-docker)
+  - [Build and Run Locally](#build-and-run-locally)
+  - [Run from Docker Hub](#run-from-docker-hub)
+- [Integration with Gatus Monitoring System](#integration-with-gatus-monitoring-system)
+- [🔧 Development](#-development)
+  - [Linting](#linting)
+  - [Testing](#testing)
+- [📜 License](#-license)
+- [🤝 Contributing](#-contributing)
+
 ## 🌟 Features
 
 - **Health Status**: Check the health of all devices in the Tailscale network.
