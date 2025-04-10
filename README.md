@@ -143,12 +143,12 @@ To use this application with an API token, you need to generate a Tailscale API 
 
 ### Build and Run Locally
 
-1. **Build the Docker Image**:
+### 1. **Build the Docker Image**:
    ```bash
    docker build -t laitco/tailscale-healthcheck .
    ```
 
-2. **Run the Docker Container**:
+### 2. **Run the Docker Container**:
 
 #### Using an API Key
 ```bash
@@ -171,7 +171,7 @@ docker run -d -p 5000:5000 \
     --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
 
-3. **Access the Application**:
+### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
@@ -179,12 +179,12 @@ docker run -d -p 5000:5000 \
 
 ### Run from Docker Hub
 
-1. **Pull the Docker Image**:
+### 1. **Pull the Docker Image**:
    ```bash
    docker pull laitco/tailscale-healthcheck:latest
    ```
 
-2. **Run the Docker Container**:
+### 2. **Run the Docker Container**:
 
 #### Using an API Key
 ```bash
@@ -207,7 +207,7 @@ docker run -d -p 5000:5000 \
     --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
 
-3. **Access the Application**:
+### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
