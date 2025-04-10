@@ -96,7 +96,7 @@ The application is configured using environment variables:
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
 
-### Using OAuth for Authentication
+### Using OAuth for Authentication (!RECOMMENDED!)
 
 If you prefer to use OAuth instead of an API token (`AUTH_TOKEN`), configure the following environment variables:
 
@@ -109,7 +109,7 @@ When OAuth is configured, the application will automatically fetch an access tok
 
 **Recommendation**: It is highly recommended to use OAuth for authentication instead of an API token (`AUTH_TOKEN`) for better security and token management.
 
-### Creating a Tailscale OAuth Client (RECOMMENDED)
+### Creating a Tailscale OAuth Client
 
 To use OAuth, you need to create a Tailscale OAuth client with the required permissions:
 
