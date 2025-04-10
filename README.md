@@ -103,7 +103,7 @@ If you prefer to use OAuth instead of an API token (`AUTH_TOKEN`), configure the
 1. **`OAUTH_CLIENT_ID`**: The client ID for your OAuth application.
 2. **`OAUTH_CLIENT_SECRET`**: The client secret for your OAuth application.
 
-When OAuth is configured, the application will automatically fetch an access token from the Tailscale API and use it for authentication. The access token is renewed every 50 minutes to ensure uninterrupted operation.
+When OAuth is configured, the application will automatically fetch an access token from the Tailscale API and use it for authentication. The access token is renewed every 50 minutes to ensure uninterrupted operation. Additionally, the application will immediately refresh the OAuth token upon receiving a 401 Unauthorized error during API requests.
 
 **Note**: If both `AUTH_TOKEN` and OAuth credentials are configured, OAuth will take priority.
 
@@ -149,14 +149,27 @@ To use this application with an API token, you need to generate a Tailscale API 
    ```
 
 2. **Run the Docker Container**:
-   ```bash
-   docker run -d -p 5000:5000 \
-       --env-file .env \
-       -e TAILNET_DOMAIN="example.com" \
-       -e THRESHOLD_MINUTES=5 \
-       -e TIMEZONE="UTC" \
-       --name tailscale-healthcheck laitco/tailscale-healthcheck
-   ```
+
+#### Using an API Key
+```bash
+docker run -d -p 5000:5000 \
+    -e TAILNET_DOMAIN="example.com" \
+    -e AUTH_TOKEN="your-api-key" \
+    -e THRESHOLD_MINUTES=5 \
+    -e TIMEZONE="Europe/Berlin" \
+    --name tailscale-healthcheck laitco/tailscale-healthcheck
+```
+
+#### Using OAuth
+```bash
+docker run -d -p 5000:5000 \
+    -e TAILNET_DOMAIN="example.com" \
+    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
+    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
+    -e THRESHOLD_MINUTES=5 \
+    -e TIMEZONE="Europe/Berlin" \
+    --name tailscale-healthcheck laitco/tailscale-healthcheck
+```
 
 3. **Access the Application**:
    Open your browser and navigate to:
@@ -172,14 +185,27 @@ To use this application with an API token, you need to generate a Tailscale API 
    ```
 
 2. **Run the Docker Container**:
-   ```bash
-   docker run -d -p 5000:5000 \
-       --env-file .env \
-       -e TAILNET_DOMAIN="example.com" \
-       -e THRESHOLD_MINUTES=5 \
-       -e TIMEZONE="UTC" \
-       --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
-   ```
+
+#### Using an API Key
+```bash
+docker run -d -p 5000:5000 \
+    -e TAILNET_DOMAIN="example.com" \
+    -e AUTH_TOKEN="your-api-key" \
+    -e THRESHOLD_MINUTES=5 \
+    -e TIMEZONE="Europe/Berlin" \
+    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
+```
+
+#### Using OAuth
+```bash
+docker run -d -p 5000:5000 \
+    -e TAILNET_DOMAIN="example.com" \
+    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
+    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
+    -e THRESHOLD_MINUTES=5 \
+    -e TIMEZONE="Europe/Berlin" \
+    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
+```
 
 3. **Access the Application**:
    Open your browser and navigate to:
