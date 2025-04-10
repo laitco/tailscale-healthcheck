@@ -17,7 +17,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - [🐳 Running with Docker](#-running-with-docker)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
-- [📡 Integration with Gatus Monitoring System](#integration-with-gatus-monitoring-system)
+- [📡 Integration with Gatus Monitoring System](#-integration-with-gatus-monitoring-system)
 - [🔧 Development](#-development)
   - [Linting](#linting)
   - [Testing](#testing)
