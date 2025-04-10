@@ -1,8 +1,8 @@
-# Tailscale Healthcheck – A Dockerized Monitoring Helper Tool
+# 🚀 Tailscale Healthcheck – A Dockerized Monitoring Helper Tool
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
-## Features
+## 🌟 Features
 
 - **Health Status**: Check the health of all devices in the Tailscale network.
 - **Device Lookup**: Query the health of a specific device by hostname, ID, or name (case-insensitive).
@@ -10,7 +10,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Unhealthy Devices**: List all unhealthy devices.
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
-## Release Notes
+## 📝 Release Notes
 
 ### 1.1.2
 - Updated GitHub Actions workflow to include validation on publishing of Docker containers
@@ -37,7 +37,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - Includes timezone support for `lastSeen` timestamps.
 - Dockerized for easy deployment.
 
-## Endpoints
+## 📡 Endpoints
 
 ### `/health`
 Returns the health status of all devices.
@@ -82,7 +82,7 @@ Returns a list of all healthy devices.
 ### `/health/unhealthy`
 Returns a list of all unhealthy devices.
 
-## Configuration
+## ⚙️ Configuration
 
 The application is configured using environment variables:
 
@@ -139,32 +139,7 @@ To use this application with an API token, you need to generate a Tailscale API 
 
 **Note**: Ensure the API key is stored securely and not shared publicly.
 
-## Running Locally
-
-1. **Clone the Repository**:
-   ```bash
-   git clone <repository-url>
-   cd tailscale-healthcheck
-   ```
-
-2. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Run the Application**:
-   ```bash
-   export AUTH_TOKEN="your-secret-token"
-   python healthcheck.py
-   ```
-
-4. **Access the Application**:
-   Open your browser and navigate to:
-   ```
-   http://IP-ADDRESS_OR_HOSTNAME:5000/health
-   ```
-
-## Running with Docker
+## 🐳 Running with Docker
 
 ### Build and Run Locally
 
@@ -253,7 +228,7 @@ endpoints:
 
 For more details on configuring Gatus, refer to the [Gatus documentation](https://github.com/TwiN/gatus).
 
-## Development
+## 🔧 Development
 
 ### Linting
 Run `flake8` to lint the code:
@@ -269,10 +244,10 @@ pip install pytest
 pytest
 ```
 
-## License
+## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
