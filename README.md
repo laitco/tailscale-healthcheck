@@ -12,7 +12,15 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## Release Notes
 
+### 1.1.2
+- Updated GitHub Actions workflow to include validation on publishing of Docker containers
+
 ### 1.1.1
+- Improved OAuth token renewal logic to handle retries and logging for better reliability.
+- Added a global timer to automatically refresh the OAuth token every 50 minutes.
+- Enhanced error handling for unknown timezones and invalid API responses.
+- Improved logging for debugging, including token renewal times and device health checks.
+- Fixed an issue where trailing slashes in URLs caused unnecessary redirects.
 - Added logic to immediately refresh the OAuth token upon receiving a 401 Unauthorized error during API requests.
 - Introduced a helper function to handle authenticated requests with automatic token refresh.
 - Improved error handling and retry logic for token renewal failures.
