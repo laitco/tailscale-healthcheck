@@ -17,6 +17,12 @@ jobs:
           DOCKER_PULLS=$(curl -s https://hub.docker.com/v2/repositories/laitco/tailscale-healthcheck/ | jq -r '.pull_count')
           sed -i "s|<img src=\"https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck\".*|<img src=\"https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck\" alt=\"Docker Pulls\">|" README.md
 
+      - name: Check for Changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit." && exit 0;
+          fi
+
       - name: Commit and Push Changes
         run: |
           git config --global user.name "github-actions[bot]"

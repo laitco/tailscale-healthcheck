@@ -17,6 +17,12 @@ jobs:
           ISSUES_COUNT=$(curl -s https://api.github.com/repos/laitco/tailscale-healthcheck | jq -r '.open_issues_count')
           sed -i "s|<img src=\"https://img.shields.io/github/issues/laitco/tailscale-healthcheck\".*|<img src=\"https://img.shields.io/github/issues/laitco/tailscale-healthcheck\" alt=\"Open Issues\">|" README.md
 
+      - name: Check for Changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit." && exit 0;
+          fi
+
       - name: Commit and Push Changes
         run: |
           git config --global user.name "github-actions[bot]"
