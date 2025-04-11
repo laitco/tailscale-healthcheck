@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src=".github/images/tailscale_healthcheck_logo.png" alt="Tailscale Healthcheck Logo" width="700">
+  <img src=".github/images/tailscale_healthcheck_logo.png" alt="Tailscale Healthcheck Logo" width="630">
 </p>
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
