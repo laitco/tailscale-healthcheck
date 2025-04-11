@@ -1,8 +1,6 @@
 name: Refresh Build Status Badge
-
 on:
-  schedule:
-    - cron: "45 */4 * * *" # Runs every 4 hours, offset by 45 minutes from Docker badge
+  workflow_dispatch:
 
 jobs:
   update_badge:
