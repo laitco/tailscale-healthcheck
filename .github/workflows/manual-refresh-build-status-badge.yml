@@ -1,4 +1,4 @@
-name: Refresh Build Status Badge
+name: Manual Refresh Build Status Badge
 on:
   workflow_dispatch:
 

@@ -1,4 +1,4 @@
-name: Refresh Open Issues Badge
+name: Manual Refresh Open Issues Badge
 on:
   workflow_dispatch:
 

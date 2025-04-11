@@ -1,4 +1,4 @@
-name: Refresh Stars Badge
+name: Manual Refresh Stars Badge
 on:
   workflow_dispatch:
 

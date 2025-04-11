@@ -1,4 +1,4 @@
-name: Refresh Docker Pull Stats Badge
+name: Manual Refresh Docker Pull Stats Badge
 on:
   workflow_dispatch:
 
