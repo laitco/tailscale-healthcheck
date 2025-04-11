@@ -1,0 +1,26 @@
+name: Refresh Docker Pull Stats Badge
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # Runs every 6 hours
+
+jobs:
+  update_badge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Update Docker Pull Stats Badge
+        run: |
+          DOCKER_PULLS=$(curl -s https://hub.docker.com/v2/repositories/laitco/tailscale-healthcheck/ | jq -r '.pull_count')
+          sed -i "s|<img src=\"https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck\".*|<img src=\"https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck\" alt=\"Docker Pulls\">|" README.md
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Update Docker Pull Stats Badge"
+          git push
