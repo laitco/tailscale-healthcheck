@@ -1,0 +1,32 @@
+name: Refresh Build Status Badge
+
+on:
+  schedule:
+    - cron: "45 */4 * * *" # Runs every 4 hours, offset by 45 minutes from Docker badge
+
+jobs:
+  update_badge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Update Build Status Badge
+        run: |
+          BUILD_STATUS=$(curl -s https://api.github.com/repos/laitco/tailscale-healthcheck/actions/runs | jq -r '.workflow_runs[0].conclusion')
+          sed -i "s|<img src=\"https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml\".*|<img src=\"https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml\" alt=\"Build Status\">|" README.md
+
+      - name: Check for Changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit." && exit 0;
+          fi
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Update Build Status Badge"
+          git push
