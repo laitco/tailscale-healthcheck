@@ -19,13 +19,13 @@ jobs:
         id: check_changes
         run: |
           if git diff --quiet; then
-            echo "No changes to commit." && echo "::set-output name=changes::false";
+            echo "No changes to commit." && echo "changes=false" >> $GITHUB_ENV;
           else
-            echo "::set-output name=changes::true";
+            echo "changes=true" >> $GITHUB_ENV;
           fi
 
       - name: Commit and Push Changes
-        if: ${{ steps.check_changes.outputs.changes == 'true' }}
+        if: ${{ env.changes == 'true' }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
