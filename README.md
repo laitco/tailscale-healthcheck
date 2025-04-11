@@ -1,6 +1,7 @@
 # 🚀 Tailscale Healthcheck – A Dockerized Monitoring Helper Tool
 
 <p align="center">
+  <img src="https://img.shields.io/github/stars/laitco/tailscale-healthcheck?style=social" alt="GitHub Stars">
   <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml?branch=main" alt="GitHub Workflow Status">
   <img src="https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck" alt="Docker Pulls">
   <img src="https://img.shields.io/github/license/laitco/tailscale-healthcheck" alt="License">

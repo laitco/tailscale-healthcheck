@@ -1,0 +1,32 @@
+name: Refresh Stars Badge
+
+on:
+  schedule:
+    - cron: "15 */4 * * *" # Runs every 4 hours, offset by 15 minutes from Docker badge
+
+jobs:
+  update_badge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Update Stars Badge
+        run: |
+          STARS_COUNT=$(curl -s https://api.github.com/repos/laitco/tailscale-healthcheck | jq -r '.stargazers_count')
+          sed -i "s|<img src=\"https://img.shields.io/github/stars/laitco/tailscale-healthcheck\".*|<img src=\"https://img.shields.io/github/stars/laitco/tailscale-healthcheck\" alt=\"GitHub Stars\">|" README.md
+
+      - name: Check for Changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit." && exit 0;
+          fi
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Update Stars Badge"
+          git push
