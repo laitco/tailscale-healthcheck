@@ -1,5 +1,16 @@
 # 🚀 Tailscale Healthcheck – A Dockerized Monitoring Helper Tool
 
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml?branch=main" alt="GitHub Workflow Status">
+  <img src="https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck" alt="Docker Pulls">
+  <img src="https://img.shields.io/github/license/laitco/tailscale-healthcheck" alt="License">
+  <img src="https://img.shields.io/badge/python-3.9-blue" alt="Python Version">
+  <img src="https://img.shields.io/badge/code%20style-flake8-blue" alt="Code Style">
+  <img src="https://img.shields.io/badge/coverage-90%25-brightgreen" alt="Test Coverage">
+  <img src="https://img.shields.io/github/last-commit/laitco/tailscale-healthcheck" alt="Last Commit">
+  <img src="https://img.shields.io/github/issues/laitco/tailscale-healthcheck" alt="Open Issues">
+</p>
+
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
 ## 📖 Table of Contents
