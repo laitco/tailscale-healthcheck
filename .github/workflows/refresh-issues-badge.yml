@@ -2,7 +2,7 @@ name: Refresh Open Issues Badge
 
 on:
   schedule:
-    - cron: "30 */6 * * *" # Runs every 6 hours, offset by 30 minutes from Docker badge
+    - cron: "30 */4 * * *" # Runs every 4 hours, offset by 30 minutes from Docker badge
 
 jobs:
   update_badge:
