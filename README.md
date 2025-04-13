@@ -52,7 +52,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Global device health status (`global_healthy`)
   - Global online status (`global_online_healthy`)
   - Global key health status (`global_key_healthy`)
-- **Days until key expiry**: Days until key expiry (`key_days_to_expire`)
+- **Key expiry**: Days until key expiry (`key_days_to_expire`)
 - **Counter Metrics**: Detailed counters for healthy/unhealthy devices
 - **Health Status**: Check the health of all devices in the Tailscale network.
 - **Device Lookup**: Query the health of a specific device by hostname, ID, or name (case-insensitive).
