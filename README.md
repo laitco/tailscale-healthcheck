@@ -48,6 +48,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Overall Health Status**: Combined health status based on:
   - Device online status (`online_healthy`)
   - Device key expiry status (`key_healthy`)
+  - Days until key expiry (`key_days_to_expire`)
 - **Global Health Metrics**: 
   - Global device health status (`global_healthy`)
   - Global online status (`global_online_healthy`)
@@ -60,6 +61,10 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
 ## 📝 Release Notes
+
+### 1.2.2
+- Added `key_days_to_expire` field showing the number of days until a device's key expires
+- Set to `null` when key expiry is disabled
 
 ### 1.2.1
 - Added global health metrics with configurable thresholds
@@ -130,6 +135,7 @@ Returns the health status of all devices.
       "keyExpiryDisabled": false,
       "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
       "key_healthy": true,
+      "key_days_to_expire": 25,
       "healthy": true
     }
   ],
@@ -323,7 +329,7 @@ endpoints:
     interval: 5m
     conditions:
       - "[STATUS] == 200"
-      - "[BODY].healthy == pat(*true*)"
+      - "[BODY].device.healthy == pat(*true*)"
     alerts:
       - type: email
         failure-threshold: 2
@@ -340,7 +346,7 @@ endpoints:
 - **`interval`**: The frequency of the healthcheck (e.g., every 5 minutes).
 - **`conditions`**:
   - `[STATUS] == 200`: Ensures the HTTP status code is `200`.
-  - `[BODY].healthy == pat(*true*)`: Checks if the `healthy` field in the response body is `true`.
+  - `[BODY].device.healthy == pat(*true*)`: Checks if the `healthy` field in the response body is `true`.
 - **`alerts`**:
   - **`type`**: The type of alert (e.g., `email`).
   - **`failure-threshold`**: The number of consecutive failures before triggering an alert.

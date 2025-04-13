@@ -161,11 +161,13 @@ def health_check():
             last_seen_local = last_seen.astimezone(tz)
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
                 expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+                key_days_to_expire = time_until_expiry.days
 
             online_is_healthy = last_seen_local >= threshold_time
             is_healthy = online_is_healthy and key_healthy
@@ -196,6 +198,7 @@ def health_check():
                 "online_healthy": online_is_healthy,
                 "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                 "key_healthy": key_healthy,
+                "key_days_to_expire": key_days_to_expire,
                 "healthy": is_healthy
             }
             
@@ -277,11 +280,13 @@ def health_check_by_identifier(identifier):
                 last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
                 expires = None
                 key_healthy = True if device.get("keyExpiryDisabled", False) else True
+                key_days_to_expire = None
                 if not device.get("keyExpiryDisabled", False) and device.get("expires"):
                     expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
                     expires = expires.astimezone(tz)
                     time_until_expiry = expires - datetime.now(tz)
                     key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+                    key_days_to_expire = time_until_expiry.days
 
                 logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
                 online_is_healthy = last_seen_local >= threshold_time
@@ -304,6 +309,7 @@ def health_check_by_identifier(identifier):
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
+                    "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy
                 }
                 
@@ -373,11 +379,13 @@ def health_check_unhealthy():
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
                 expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+                key_days_to_expire = time_until_expiry.days
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
@@ -405,6 +413,7 @@ def health_check_unhealthy():
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
+                    "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy
                 }
                 
@@ -472,11 +481,13 @@ def health_check_healthy():
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
                 expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+                key_days_to_expire = time_until_expiry.days
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
@@ -498,6 +509,7 @@ def health_check_healthy():
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
+                    "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy
                 }
                 
