@@ -18,7 +18,8 @@ app.url_map.strict_slashes = False  # Allow trailing slashes to be ignored
 TAILNET_DOMAIN = os.getenv("TAILNET_DOMAIN", "example.com")  # Default to "example.com"
 TAILSCALE_API_URL = f"https://api.tailscale.com/api/v2/tailnet/{TAILNET_DOMAIN}/devices"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your-default-token")
-THRESHOLD_MINUTES = int(os.getenv("THRESHOLD_MINUTES", 5))  # Default to 5 minutes
+ONLINE_THRESHOLD_MINUTES = int(os.getenv("ONLINE_THRESHOLD_MINUTES", 5))  # Default to 5 minutes
+KEY_THRESHOLD_MINUTES = int(os.getenv("KEY_THRESHOLD_MINUTES", 1440))  # Default to 1440 minutes
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 
@@ -139,26 +140,41 @@ def health_check():
             logging.error(f"Unknown timezone: {TIMEZONE}")
             return jsonify({"error": f"Unknown timezone: {TIMEZONE}"}), 400
 
-        # Calculate the threshold time (now - THRESHOLD_MINUTES) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=THRESHOLD_MINUTES)
+        # Calculate the threshold time (now - ONLINE_THRESHOLD_MINUTES) in the specified timezone
+        threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
         # Check health status for each device
         health_status = []
         for device in devices:
             last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
-            last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
-            logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            is_healthy = last_seen_local >= threshold_time
-            machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-            health_status.append({
+            last_seen_local = last_seen.astimezone(tz)
+            expires = None
+            key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
+                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = expires.astimezone(tz)
+                time_until_expiry = expires - datetime.now(tz)
+                key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+
+            online_is_healthy = last_seen_local >= threshold_time
+            machine_name = device["name"].split('.')[0]
+            health_info = {
                 "id": device["id"],
                 "device": device["name"],
                 "machineName": machine_name,
                 "hostname": device["hostname"],
-                "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
-                "healthy": is_healthy
-            })
+                "lastSeen": last_seen_local.isoformat(),
+                "online_healthy": online_is_healthy,
+                "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                "key_healthy": key_healthy,
+                "healthy": online_is_healthy and key_healthy
+            }
+            
+            if not device.get("keyExpiryDisabled", False):
+                health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
+            
+            health_status.append(health_info)
 
         return jsonify(health_status)
 
@@ -191,8 +207,8 @@ def health_check_by_identifier(identifier):
             logging.error(f"Unknown timezone: {TIMEZONE}")
             return jsonify({"error": f"Unknown timezone: {TIMEZONE}"}), 400
 
-        # Calculate the threshold time (now - THRESHOLD_MINUTES) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=THRESHOLD_MINUTES)
+        # Calculate the threshold time (now - ONLINE_THRESHOLD_MINUTES) in the specified timezone
+        threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
         # Convert identifier to lowercase for case-insensitive comparison
@@ -207,16 +223,32 @@ def health_check_by_identifier(identifier):
                 machine_name.lower() == identifier_lower):
                 last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
                 last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+                expires = None
+                key_healthy = True if device.get("keyExpiryDisabled", False) else True
+                if not device.get("keyExpiryDisabled", False) and device.get("expires"):
+                    expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                    expires = expires.astimezone(tz)
+                    time_until_expiry = expires - datetime.now(tz)
+                    key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+
                 logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-                is_healthy = last_seen_local >= threshold_time
-                return jsonify({
+                online_is_healthy = last_seen_local >= threshold_time
+                health_info = {
                     "id": device["id"],
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
-                    "healthy": is_healthy
-                })
+                    "online_healthy": online_is_healthy,
+                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "key_healthy": key_healthy,
+                    "healthy": online_is_healthy and key_healthy
+                }
+                
+                if not device.get("keyExpiryDisabled", False):
+                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
+                
+                return jsonify(health_info)
 
         # If no matching hostname, ID, name, or machineName is found
         return jsonify({"error": "Device not found"}), 404
@@ -245,8 +277,8 @@ def health_check_unhealthy():
             logging.error(f"Unknown timezone: {TIMEZONE}")
             return jsonify({"error": f"Unknown timezone: {TIMEZONE}"}), 400
 
-        # Calculate the threshold time (now - THRESHOLD_MINUTES) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=THRESHOLD_MINUTES)
+        # Calculate the threshold time (now - ONLINE_THRESHOLD_MINUTES) in the specified timezone
+        threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
         # Check health status for each device and filter unhealthy devices
@@ -254,18 +286,34 @@ def health_check_unhealthy():
         for device in devices:
             last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+            expires = None
+            key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
+                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = expires.astimezone(tz)
+                time_until_expiry = expires - datetime.now(tz)
+                key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            is_healthy = last_seen_local >= threshold_time
-            if not is_healthy:
+            online_is_healthy = last_seen_local >= threshold_time
+            if not online_is_healthy:
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-                unhealthy_devices.append({
+                health_info = {
                     "id": device["id"],
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
-                    "healthy": is_healthy
-                })
+                    "online_healthy": online_is_healthy,
+                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "key_healthy": key_healthy,
+                    "healthy": online_is_healthy and key_healthy
+                }
+                
+                if not device.get("keyExpiryDisabled", False):
+                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
+                
+                unhealthy_devices.append(health_info)
 
         return jsonify(unhealthy_devices)
 
@@ -293,8 +341,8 @@ def health_check_healthy():
             logging.error(f"Unknown timezone: {TIMEZONE}")
             return jsonify({"error": f"Unknown timezone: {TIMEZONE}"}), 400
 
-        # Calculate the threshold time (now - THRESHOLD_MINUTES) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=THRESHOLD_MINUTES)
+        # Calculate the threshold time (now - ONLINE_THRESHOLD_MINUTES) in the specified timezone
+        threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
         # Check health status for each device and filter healthy devices
@@ -302,18 +350,34 @@ def health_check_healthy():
         for device in devices:
             last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+            expires = None
+            key_healthy = True if device.get("keyExpiryDisabled", False) else True
+            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
+                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = expires.astimezone(tz)
+                time_until_expiry = expires - datetime.now(tz)
+                key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
+
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            is_healthy = last_seen_local >= threshold_time
-            if is_healthy:
+            online_is_healthy = last_seen_local >= threshold_time
+            if online_is_healthy:
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-                healthy_devices.append({
+                health_info = {
                     "id": device["id"],
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
-                    "healthy": is_healthy
-                })
+                    "online_healthy": online_is_healthy,
+                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "key_healthy": key_healthy,
+                    "healthy": online_is_healthy and key_healthy
+                }
+                
+                if not device.get("keyExpiryDisabled", False):
+                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
+                
+                healthy_devices.append(health_info)
 
         return jsonify(healthy_devices)
 

@@ -45,6 +45,9 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## 🌟 Features
 
+- **Overall Health Status**: Combined health status based on:
+  - Device online status (`online_healthy`)
+  - Device key expiry status (`key_healthy`)
 - **Health Status**: Check the health of all devices in the Tailscale network.
 - **Device Lookup**: Query the health of a specific device by hostname, ID, or name (case-insensitive).
 - **Healthy Devices**: List all healthy devices.
@@ -52,6 +55,16 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
 ## 📝 Release Notes
+
+### 1.2.0
+- Added key expiry monitoring with configurable threshold (KEY_THRESHOLD_MINUTES, default: 1440)
+- Introduced combined health status based on online status and key expiry
+- Added new health indicators in API response:
+  - online_healthy: Device online status
+  - key_healthy: Key expiry status
+  - healthy: Combined status (true only if both checks pass)
+- Added keyExpiryDisabled and keyExpiryTimestamp fields in API response
+- Improved timezone handling for all timestamp fields
 
 ### 1.1.3
 - Added `worker_exit` hook in Gunicorn to log worker exits and confirm restarts.
@@ -97,6 +110,10 @@ Returns the health status of all devices.
     "machineName": "examplehostname",
     "hostname": "examplehostname",
     "lastSeen": "2025-04-09T22:03:57+02:00",
+    "online_healthy": true,
+    "keyExpiryDisabled": false,
+    "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
+    "key_healthy": true,
     "healthy": true
   }
 ]
@@ -138,7 +155,8 @@ The application is configured using environment variables:
 | `AUTH_TOKEN`         | None              | The Tailscale API token (required if OAuth is not configured).             |
 | `OAUTH_CLIENT_ID`    | None              | The OAuth client ID (required if using OAuth).                             |
 | `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
-| `THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine health.                              |
+| `ONLINE_THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine online health.                       |
+| `KEY_THRESHOLD_MINUTES`     | `1440`            | The threshold in minutes to determine key expiry health.                  |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
 
@@ -201,7 +219,8 @@ To use this application with an API token, you need to generate a Tailscale API 
 docker run -d -p 5000:5000 \
     -e TAILNET_DOMAIN="example.com" \
     -e AUTH_TOKEN="your-api-key" \
-    -e THRESHOLD_MINUTES=5 \
+    -e ONLINE_THRESHOLD_MINUTES=5 \
+    -e KEY_THRESHOLD_MINUTES=1440 \
     -e TIMEZONE="Europe/Berlin" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
@@ -212,7 +231,7 @@ docker run -d -p 5000:5000 \
     -e TAILNET_DOMAIN="example.com" \
     -e OAUTH_CLIENT_ID="your-oauth-client-id" \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e THRESHOLD_MINUTES=5 \
+    -e ONLINE_THRESHOLD_MINUTES=5 \
     -e TIMEZONE="Europe/Berlin" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
@@ -237,7 +256,8 @@ docker run -d -p 5000:5000 \
 docker run -d -p 5000:5000 \
     -e TAILNET_DOMAIN="example.com" \
     -e AUTH_TOKEN="your-api-key" \
-    -e THRESHOLD_MINUTES=5 \
+    -e ONLINE_THRESHOLD_MINUTES=5 \
+    -e KEY_THRESHOLD_MINUTES=1440 \
     -e TIMEZONE="Europe/Berlin" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
@@ -248,7 +268,7 @@ docker run -d -p 5000:5000 \
     -e TAILNET_DOMAIN="example.com" \
     -e OAUTH_CLIENT_ID="your-oauth-client-id" \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e THRESHOLD_MINUTES=5 \
+    -e ONLINE_THRESHOLD_MINUTES=5 \
     -e TIMEZONE="Europe/Berlin" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
