@@ -20,6 +20,9 @@ TAILSCALE_API_URL = f"https://api.tailscale.com/api/v2/tailnet/{TAILNET_DOMAIN}/
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your-default-token")
 ONLINE_THRESHOLD_MINUTES = int(os.getenv("ONLINE_THRESHOLD_MINUTES", 5))  # Default to 5 minutes
 KEY_THRESHOLD_MINUTES = int(os.getenv("KEY_THRESHOLD_MINUTES", 1440))  # Default to 1440 minutes
+GLOBAL_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_HEALTHY_THRESHOLD", 100))
+GLOBAL_ONLINE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_ONLINE_HEALTHY_THRESHOLD", 100))
+GLOBAL_KEY_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_KEY_HEALTHY_THRESHOLD", 100))
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 
@@ -146,6 +149,13 @@ def health_check():
 
         # Check health status for each device
         health_status = []
+        counter_healthy_true = 0
+        counter_healthy_false = 0
+        counter_healthy_online_true = 0
+        counter_healthy_online_false = 0
+        counter_key_healthy_true = 0
+        counter_key_healthy_false = 0
+
         for device in devices:
             last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)
@@ -158,6 +168,24 @@ def health_check():
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
 
             online_is_healthy = last_seen_local >= threshold_time
+            is_healthy = online_is_healthy and key_healthy
+
+            # Update counters
+            if is_healthy:
+                counter_healthy_true += 1
+            else:
+                counter_healthy_false += 1
+
+            if online_is_healthy:
+                counter_healthy_online_true += 1
+            else:
+                counter_healthy_online_false += 1
+
+            if key_healthy:
+                counter_key_healthy_true += 1
+            else:
+                counter_key_healthy_false += 1
+
             machine_name = device["name"].split('.')[0]
             health_info = {
                 "id": device["id"],
@@ -168,7 +196,7 @@ def health_check():
                 "online_healthy": online_is_healthy,
                 "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                 "key_healthy": key_healthy,
-                "healthy": online_is_healthy and key_healthy
+                "healthy": is_healthy
             }
             
             if not device.get("keyExpiryDisabled", False):
@@ -176,7 +204,23 @@ def health_check():
             
             health_status.append(health_info)
 
-        return jsonify(health_status)
+        # Add counters and global health metrics to response
+        response = {
+            "devices": health_status,
+            "metrics": {
+                "counter_healthy_true": counter_healthy_true,
+                "counter_healthy_false": counter_healthy_false,
+                "counter_healthy_online_true": counter_healthy_online_true,
+                "counter_healthy_online_false": counter_healthy_online_false,
+                "counter_key_healthy_true": counter_key_healthy_true,
+                "counter_key_healthy_false": counter_key_healthy_false,
+                "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
+                "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+            }
+        }
+
+        return jsonify(response)
 
     except Exception as e:
         logging.error(f"Error in health_check: {e}")
@@ -214,6 +258,14 @@ def health_check_by_identifier(identifier):
         # Convert identifier to lowercase for case-insensitive comparison
         identifier_lower = identifier.lower()
 
+        # Initialize counters
+        counter_healthy_true = 0
+        counter_healthy_false = 0
+        counter_healthy_online_true = 0
+        counter_healthy_online_false = 0
+        counter_key_healthy_true = 0
+        counter_key_healthy_false = 0
+
         # Find the device with the matching hostname, ID, name, or machineName
         for device in devices:
             machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
@@ -233,6 +285,16 @@ def health_check_by_identifier(identifier):
 
                 logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
                 online_is_healthy = last_seen_local >= threshold_time
+                is_healthy = online_is_healthy and key_healthy
+
+                # Count only this specific device
+                counter_healthy_true = 1 if is_healthy else 0
+                counter_healthy_false = 0 if is_healthy else 1
+                counter_healthy_online_true = 1 if online_is_healthy else 0
+                counter_healthy_online_false = 0 if online_is_healthy else 1
+                counter_key_healthy_true = 1 if key_healthy else 0
+                counter_key_healthy_false = 0 if key_healthy else 1
+
                 health_info = {
                     "id": device["id"],
                     "device": device["name"],
@@ -248,7 +310,22 @@ def health_check_by_identifier(identifier):
                 if not device.get("keyExpiryDisabled", False):
                     health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
                 
-                return jsonify(health_info)
+                response = {
+                    "device": health_info,
+                    "metrics": {
+                        "counter_healthy_true": counter_healthy_true,
+                        "counter_healthy_false": counter_healthy_false,
+                        "counter_healthy_online_true": counter_healthy_online_true,
+                        "counter_healthy_online_false": counter_healthy_online_false,
+                        "counter_key_healthy_true": counter_key_healthy_true,
+                        "counter_key_healthy_false": counter_key_healthy_false,
+                        "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
+                        "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+                        "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+                    }
+                }
+                
+                return jsonify(response)
 
         # If no matching hostname, ID, name, or machineName is found
         return jsonify({"error": "Device not found"}), 404
@@ -281,6 +358,14 @@ def health_check_unhealthy():
         threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
+        # Initialize counters
+        counter_healthy_true = 0
+        counter_healthy_false = 0
+        counter_healthy_online_true = 0
+        counter_healthy_online_false = 0
+        counter_key_healthy_true = 0
+        counter_key_healthy_false = 0
+
         # Check health status for each device and filter unhealthy devices
         unhealthy_devices = []
         for device in devices:
@@ -296,7 +381,20 @@ def health_check_unhealthy():
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
-            if not online_is_healthy:
+            is_healthy = online_is_healthy and key_healthy
+
+            if not is_healthy:
+                # Count only unhealthy devices that will be output
+                counter_healthy_false += 1
+                if not online_is_healthy:
+                    counter_healthy_online_false += 1
+                else:
+                    counter_healthy_online_true += 1
+                if not key_healthy:
+                    counter_key_healthy_false += 1
+                else:
+                    counter_key_healthy_true += 1
+
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
                 health_info = {
                     "id": device["id"],
@@ -315,7 +413,21 @@ def health_check_unhealthy():
                 
                 unhealthy_devices.append(health_info)
 
-        return jsonify(unhealthy_devices)
+        response = {
+            "devices": unhealthy_devices,
+            "metrics": {
+                "counter_healthy_true": counter_healthy_true,
+                "counter_healthy_false": counter_healthy_false,
+                "counter_healthy_online_true": counter_healthy_online_true,
+                "counter_healthy_online_false": counter_healthy_online_false,
+                "counter_key_healthy_true": counter_key_healthy_true,
+                "counter_key_healthy_false": counter_key_healthy_false,
+                "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
+                "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+            }
+        }
+        return jsonify(response)
 
     except Exception as e:
         logging.error(f"Error in health_check_unhealthy: {e}")
@@ -345,6 +457,14 @@ def health_check_healthy():
         threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
         logging.debug(f"Threshold time: {threshold_time.isoformat()}")
 
+        # Initialize counters
+        counter_healthy_true = 0
+        counter_healthy_false = 0
+        counter_healthy_online_true = 0
+        counter_healthy_online_false = 0
+        counter_key_healthy_true = 0
+        counter_key_healthy_false = 0
+
         # Check health status for each device and filter healthy devices
         healthy_devices = []
         for device in devices:
@@ -360,7 +480,14 @@ def health_check_healthy():
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
-            if online_is_healthy:
+            is_healthy = online_is_healthy and key_healthy
+
+            if is_healthy:
+                # Count only healthy devices that will be output
+                counter_healthy_true += 1
+                counter_healthy_online_true += 1
+                counter_key_healthy_true += 1
+
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
                 health_info = {
                     "id": device["id"],
@@ -379,7 +506,21 @@ def health_check_healthy():
                 
                 healthy_devices.append(health_info)
 
-        return jsonify(healthy_devices)
+        response = {
+            "devices": healthy_devices,
+            "metrics": {
+                "counter_healthy_true": counter_healthy_true,
+                "counter_healthy_false": counter_healthy_false,
+                "counter_healthy_online_true": counter_healthy_online_true,
+                "counter_healthy_online_false": counter_healthy_online_false,
+                "counter_key_healthy_true": counter_key_healthy_true,
+                "counter_key_healthy_false": counter_key_healthy_false,
+                "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
+                "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+            }
+        }
+        return jsonify(response)
 
     except Exception as e:
         logging.error(f"Error in health_check_healthy: {e}")

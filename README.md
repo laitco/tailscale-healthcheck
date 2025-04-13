@@ -48,6 +48,11 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Overall Health Status**: Combined health status based on:
   - Device online status (`online_healthy`)
   - Device key expiry status (`key_healthy`)
+- **Global Health Metrics**: 
+  - Global device health status (`global_healthy`)
+  - Global online status (`global_online_healthy`)
+  - Global key health status (`global_key_healthy`)
+- **Counter Metrics**: Detailed counters for healthy/unhealthy devices
 - **Health Status**: Check the health of all devices in the Tailscale network.
 - **Device Lookup**: Query the health of a specific device by hostname, ID, or name (case-insensitive).
 - **Healthy Devices**: List all healthy devices.
@@ -55,6 +60,16 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
 ## 📝 Release Notes
+
+### 1.2.1
+- Added global health metrics with configurable thresholds
+  - GLOBAL_HEALTHY_THRESHOLD (default: 100)
+  - GLOBAL_ONLINE_HEALTHY_THRESHOLD (default: 100)
+  - GLOBAL_KEY_HEALTHY_THRESHOLD (default: 100)
+- Added detailed counter metrics for monitoring device states
+  - Healthy/unhealthy device counters
+  - Online/offline device counters
+  - Valid/expired key counters
 
 ### 1.2.0
 - Added key expiry monitoring with configurable threshold (KEY_THRESHOLD_MINUTES, default: 1440)
@@ -103,47 +118,37 @@ Returns the health status of all devices.
 
 **Example Response**:
 ```json
-[
-  {
-    "id": "1234567890",
-    "device": "examplehostname.example.com",
-    "machineName": "examplehostname",
-    "hostname": "examplehostname",
-    "lastSeen": "2025-04-09T22:03:57+02:00",
-    "online_healthy": true,
-    "keyExpiryDisabled": false,
-    "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
-    "key_healthy": true,
-    "healthy": true
+{
+  "devices": [
+    {
+      "id": "1234567890",
+      "device": "examplehostname.example.com",
+      "machineName": "examplehostname",
+      "hostname": "examplehostname",
+      "lastSeen": "2025-04-09T22:03:57+02:00",
+      "online_healthy": true,
+      "keyExpiryDisabled": false,
+      "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
+      "key_healthy": true,
+      "healthy": true
+    }
+  ],
+  "metrics": {
+    "counter_healthy_true": 1,
+    "counter_healthy_false": 0,
+    "counter_healthy_online_true": 1,
+    "counter_healthy_online_false": 0,
+    "counter_key_healthy_true": 1,
+    "counter_key_healthy_false": 0,
+    "global_key_healthy": true,
+    "global_online_healthy": true,
+    "global_healthy": true
   }
-]
+}
 ```
 
 ### `/health/<identifier>`
 Returns the health status of a specific device by hostname, ID, or name.
-
-**Example**:
-```
-GET /health/examplehostname
-```
-
-**Example Response**:
-```json
-[
-  {
-    "id": "1234567890",
-    "device": "examplehostname.example.com",
-    "machineName": "examplehostname",
-    "hostname": "examplehostname",
-    "lastSeen": "2025-04-09T22:03:57+02:00",
-    "online_healthy": true,
-    "keyExpiryDisabled": false,
-    "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
-    "key_healthy": true,
-    "healthy": true
-  }
-]
-```
 
 ### `/health/healthy`
 Returns a list of all healthy devices.
@@ -163,8 +168,27 @@ The application is configured using environment variables:
 | `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
 | `ONLINE_THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine online health.                       |
 | `KEY_THRESHOLD_MINUTES`     | `1440`            | The threshold in minutes to determine key expiry health.                  |
+| `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
+| `GLOBAL_ONLINE_HEALTHY_THRESHOLD`| `100`        | The threshold for total online health.                                       |
+| `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
+
+### Response Metrics
+
+The API response includes the following health metrics:
+
+**Counter Metrics:**
+- `counter_healthy_true/false`: Number of healthy/unhealthy devices
+- `counter_healthy_online_true/false`: Number of online/offline devices
+- `counter_key_healthy_true/false`: Number of devices with valid/expired keys
+
+**Global Health Metrics:**
+- `global_key_healthy`: True if key_healthy_false count is below threshold
+- `global_online_healthy`: True if healthy_online_false count is below threshold
+- `global_healthy`: True if healthy_false count is below threshold
+
+These global metrics become false when their respective false counters exceed the GLOBAL_UNHEALTHY_THRESHOLD.
 
 ### Using OAuth for Authentication (!RECOMMENDED!)
 
