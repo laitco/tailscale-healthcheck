@@ -129,14 +129,20 @@ GET /health/examplehostname
 
 **Example Response**:
 ```json
-{
-  "id": "1234567890",
-  "device": "examplehostname.example.com",
-  "machineName": "examplehostname",
-  "hostname": "examplehostname",
-  "lastSeen": "2025-04-09T22:03:57+02:00",
-  "healthy": true
-}
+[
+  {
+    "id": "1234567890",
+    "device": "examplehostname.example.com",
+    "machineName": "examplehostname",
+    "hostname": "examplehostname",
+    "lastSeen": "2025-04-09T22:03:57+02:00",
+    "online_healthy": true,
+    "keyExpiryDisabled": false,
+    "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
+    "key_healthy": true,
+    "healthy": true
+  }
+]
 ```
 
 ### `/health/healthy`
