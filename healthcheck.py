@@ -143,21 +143,21 @@ def should_include_device(device):
     ]
 
     # OS filtering
-    if INCLUDE_OS:
+    if INCLUDE_OS and INCLUDE_OS != "":
         os_patterns = [p.strip() for p in INCLUDE_OS.split(",")]
         if not any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
             return False
-    elif EXCLUDE_OS:
+    elif EXCLUDE_OS and EXCLUDE_OS != "":
         os_patterns = [p.strip() for p in EXCLUDE_OS.split(",")]
         if any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
             return False
 
     # Identifier filtering
-    if INCLUDE_IDENTIFIER:
+    if INCLUDE_IDENTIFIER and INCLUDE_IDENTIFIER != "":
         identifier_patterns = [p.strip().lower() for p in INCLUDE_IDENTIFIER.split(",")]
         if not any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
             return False
-    elif EXCLUDE_IDENTIFIER:
+    elif EXCLUDE_IDENTIFIER and EXCLUDE_IDENTIFIER != "":
         identifier_patterns = [p.strip().lower() for p in EXCLUDE_IDENTIFIER.split(",")]
         if any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
             return False
