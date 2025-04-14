@@ -62,6 +62,13 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## 📝 Release Notes
 
+### 1.2.3
+- Added device filtering capabilities:
+  - Operating system filters (INCLUDE_OS, EXCLUDE_OS)
+  - Device identifier filters (INCLUDE_IDENTIFIER, EXCLUDE_IDENTIFIER)
+  - Support for wildcard patterns in filter strings
+  - Include filters take precedence over exclude filters
+
 ### 1.2.2
 - Added `key_days_to_expire` field showing the number of days until a device's key expires
 - Set to `null` when key expiry is disabled
@@ -130,6 +137,7 @@ Returns the health status of all devices.
       "device": "examplehostname.example.com",
       "machineName": "examplehostname",
       "hostname": "examplehostname",
+      "os": "macOS",
       "lastSeen": "2025-04-09T22:03:57+02:00",
       "online_healthy": true,
       "keyExpiryDisabled": false,
@@ -179,6 +187,10 @@ The application is configured using environment variables:
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
+| `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
+| `EXCLUDE_OS`         | `""`              | Filter to exclude specific operating systems (comma-separated, wildcards allowed)      |
+| `INCLUDE_IDENTIFIER` | `""`              | Filter to include only specific devices by identifier (comma-separated, wildcards allowed) |
+| `EXCLUDE_IDENTIFIER` | `""`              | Filter to exclude specific devices by identifier (comma-separated, wildcards allowed)  |
 
 ### Response Metrics
 
@@ -238,6 +250,30 @@ To use this application with an API token, you need to generate a Tailscale API 
 3. Set the API key as the `AUTH_TOKEN` environment variable.
 
 **Note**: Ensure the API key is stored securely and not shared publicly.
+
+### Filter Configuration Examples
+
+The application supports filtering devices by OS and identifier (hostname, ID, or name) using wildcards:
+
+**Operating System Filters:**
+```bash
+# Include only Windows and macOS devices
+INCLUDE_OS="linux*,freebsd*"
+
+# Exclude Linux devices
+EXCLUDE_OS="iOS*"
+```
+
+**Device Identifier Filters:**
+```bash
+# Include only devices with specific names
+INCLUDE_IDENTIFIER="firewall*,server*"
+
+# Exclude specific devices
+EXCLUDE_IDENTIFIER="test*,dev*,iphone*,ipad*"
+```
+
+**Note**: When `INCLUDE` filters are set, `EXCLUDE` filters are ignored for that category. Empty filter values mean no filtering is applied.
 
 ## 🐳 Running with Docker
 

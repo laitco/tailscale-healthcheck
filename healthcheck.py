@@ -7,6 +7,7 @@ import logging  # Add logging for debugging
 from threading import Timer  # For token renewal
 from urllib3.exceptions import ProtocolError  # Add import for better error handling
 from http.client import RemoteDisconnected  # Add import for better error handling
+import fnmatch  # Add for wildcard pattern matching
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -25,6 +26,12 @@ GLOBAL_ONLINE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_ONLINE_HEALTHY_THRESHOLD
 GLOBAL_KEY_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_KEY_HEALTHY_THRESHOLD", 100))
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
+
+# Filter configurations
+INCLUDE_OS = os.getenv("INCLUDE_OS", "").strip()
+EXCLUDE_OS = os.getenv("EXCLUDE_OS", "").strip()
+INCLUDE_IDENTIFIER = os.getenv("INCLUDE_IDENTIFIER", "").strip()
+EXCLUDE_IDENTIFIER = os.getenv("EXCLUDE_IDENTIFIER", "").strip()
 
 # Load OAuth configuration from environment variables
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
@@ -123,6 +130,40 @@ def make_authenticated_request(url, headers):
         logging.error(f"Error during authenticated request: {e}")
         raise
 
+def should_include_device(device):
+    """
+    Check if a device should be included based on filter settings
+    """
+    # Get device identifiers
+    identifiers = [
+        device["hostname"].lower(),
+        device["id"].lower(),
+        device["name"].lower(),
+        device["name"].split('.')[0].lower()  # machineName
+    ]
+
+    # OS filtering
+    if INCLUDE_OS:
+        os_patterns = [p.strip() for p in INCLUDE_OS.split(",")]
+        if not any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
+            return False
+    elif EXCLUDE_OS:
+        os_patterns = [p.strip() for p in EXCLUDE_OS.split(",")]
+        if any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
+            return False
+
+    # Identifier filtering
+    if INCLUDE_IDENTIFIER:
+        identifier_patterns = [p.strip().lower() for p in INCLUDE_IDENTIFIER.split(",")]
+        if not any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
+            return False
+    elif EXCLUDE_IDENTIFIER:
+        identifier_patterns = [p.strip().lower() for p in EXCLUDE_IDENTIFIER.split(",")]
+        if any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
+            return False
+
+    return True
+
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
@@ -157,6 +198,10 @@ def health_check():
         counter_key_healthy_false = 0
 
         for device in devices:
+            # Apply filters
+            if not should_include_device(device):
+                continue
+
             last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)
             expires = None
@@ -194,6 +239,7 @@ def health_check():
                 "device": device["name"],
                 "machineName": machine_name,
                 "hostname": device["hostname"],
+                "os": device["os"],
                 "lastSeen": last_seen_local.isoformat(),
                 "online_healthy": online_is_healthy,
                 "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -305,6 +351,7 @@ def health_check_by_identifier(identifier):
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
+                    "os": device["os"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -409,6 +456,7 @@ def health_check_unhealthy():
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
+                    "os": device["os"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -505,6 +553,7 @@ def health_check_healthy():
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
+                    "os": device["os"],
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
