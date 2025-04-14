@@ -143,22 +143,30 @@ def should_include_device(device):
     ]
 
     # OS filtering
-    if INCLUDE_OS and INCLUDE_OS != "":
-        os_patterns = [p.strip() for p in INCLUDE_OS.split(",")]
+    if INCLUDE_OS and INCLUDE_OS.strip() != "":
+        os_patterns = [p.strip() for p in INCLUDE_OS.split(",") if p.strip()]
+        if not os_patterns:  # Skip if no valid patterns after cleaning
+            return True
         if not any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
             return False
-    elif EXCLUDE_OS and EXCLUDE_OS != "":
-        os_patterns = [p.strip() for p in EXCLUDE_OS.split(",")]
+    elif EXCLUDE_OS and EXCLUDE_OS.strip() != "":
+        os_patterns = [p.strip() for p in EXCLUDE_OS.split(",") if p.strip()]
+        if not os_patterns:  # Skip if no valid patterns after cleaning
+            return True
         if any(fnmatch.fnmatch(device["os"], pattern) for pattern in os_patterns):
             return False
 
     # Identifier filtering
-    if INCLUDE_IDENTIFIER and INCLUDE_IDENTIFIER != "":
-        identifier_patterns = [p.strip().lower() for p in INCLUDE_IDENTIFIER.split(",")]
+    if INCLUDE_IDENTIFIER and INCLUDE_IDENTIFIER.strip() != "":
+        identifier_patterns = [p.strip().lower() for p in INCLUDE_IDENTIFIER.split(",") if p.strip()]
+        if not identifier_patterns:  # Skip if no valid patterns after cleaning
+            return True
         if not any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
             return False
-    elif EXCLUDE_IDENTIFIER and EXCLUDE_IDENTIFIER != "":
-        identifier_patterns = [p.strip().lower() for p in EXCLUDE_IDENTIFIER.split(",")]
+    elif EXCLUDE_IDENTIFIER and EXCLUDE_IDENTIFIER.strip() != "":
+        identifier_patterns = [p.strip().lower() for p in EXCLUDE_IDENTIFIER.split(",") if p.strip()]
+        if not identifier_patterns:  # Skip if no valid patterns after cleaning
+            return True
         if any(any(fnmatch.fnmatch(identifier, pattern) for pattern in identifier_patterns) for identifier in identifiers):
             return False
 
