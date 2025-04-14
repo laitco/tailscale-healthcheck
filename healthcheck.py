@@ -26,6 +26,7 @@ GLOBAL_ONLINE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_ONLINE_HEALTHY_THRESHOLD
 GLOBAL_KEY_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_KEY_HEALTHY_THRESHOLD", 100))
 GLOBAL_UPDATE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_UPDATE_HEALTHY_THRESHOLD", 100))
 UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH = os.getenv("UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH", "NO").upper() == "YES"
+DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper() == "YES"
 
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
@@ -348,6 +349,32 @@ def health_check():
             health_status.append(health_info)
 
         # Add counters and global health metrics to response
+        settings = {
+            "TAILNET_DOMAIN": TAILNET_DOMAIN,
+            "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
+            "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
+            "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
+            "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
+            "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
+            "GLOBAL_ONLINE_HEALTHY_THRESHOLD": GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+            "GLOBAL_KEY_HEALTHY_THRESHOLD": GLOBAL_KEY_HEALTHY_THRESHOLD,
+            "GLOBAL_UPDATE_HEALTHY_THRESHOLD": GLOBAL_UPDATE_HEALTHY_THRESHOLD,
+            "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH,
+            "DISPLAY_SETTINGS_IN_OUTPUT": DISPLAY_SETTINGS_IN_OUTPUT,
+            "TIMEZONE": TIMEZONE,
+            "INCLUDE_OS": INCLUDE_OS if INCLUDE_OS else "",
+            "EXCLUDE_OS": EXCLUDE_OS if EXCLUDE_OS else "",
+            "INCLUDE_IDENTIFIER": INCLUDE_IDENTIFIER if INCLUDE_IDENTIFIER else "",
+            "EXCLUDE_IDENTIFIER": EXCLUDE_IDENTIFIER if EXCLUDE_IDENTIFIER else "",
+            "INCLUDE_TAGS": INCLUDE_TAGS if INCLUDE_TAGS else "",
+            "EXCLUDE_TAGS": EXCLUDE_TAGS if EXCLUDE_TAGS else "",
+            "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": INCLUDE_IDENTIFIER_UPDATE_HEALTHY if INCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": EXCLUDE_IDENTIFIER_UPDATE_HEALTHY if EXCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "INCLUDE_TAG_UPDATE_HEALTHY": INCLUDE_TAG_UPDATE_HEALTHY if INCLUDE_TAG_UPDATE_HEALTHY else "",
+            "EXCLUDE_TAG_UPDATE_HEALTHY": EXCLUDE_TAG_UPDATE_HEALTHY if EXCLUDE_TAG_UPDATE_HEALTHY else ""
+        }
+
         response = {
             "devices": health_status,
             "metrics": {
@@ -359,12 +386,15 @@ def health_check():
                 "counter_key_healthy_false": counter_key_healthy_false,
                 "counter_update_healthy_true": counter_update_healthy_true,
                 "counter_update_healthy_false": counter_update_healthy_false,
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
                 "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                 "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
                 "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
+        
+        if DISPLAY_SETTINGS_IN_OUTPUT:
+            response["settings"] = settings
 
         return jsonify(response)
 
@@ -476,6 +506,32 @@ def health_check_by_identifier(identifier):
                 if not device.get("keyExpiryDisabled", False):
                     health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
                 
+                settings = {
+                    "TAILNET_DOMAIN": TAILNET_DOMAIN,
+                    "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
+                    "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
+                    "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+                    "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
+                    "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
+                    "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
+                    "GLOBAL_ONLINE_HEALTHY_THRESHOLD": GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+                    "GLOBAL_KEY_HEALTHY_THRESHOLD": GLOBAL_KEY_HEALTHY_THRESHOLD,
+                    "GLOBAL_UPDATE_HEALTHY_THRESHOLD": GLOBAL_UPDATE_HEALTHY_THRESHOLD,
+                    "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH,
+                    "DISPLAY_SETTINGS_IN_OUTPUT": DISPLAY_SETTINGS_IN_OUTPUT,
+                    "TIMEZONE": TIMEZONE,
+                    "INCLUDE_OS": INCLUDE_OS if INCLUDE_OS else "",
+                    "EXCLUDE_OS": EXCLUDE_OS if EXCLUDE_OS else "",
+                    "INCLUDE_IDENTIFIER": INCLUDE_IDENTIFIER if INCLUDE_IDENTIFIER else "",
+                    "EXCLUDE_IDENTIFIER": EXCLUDE_IDENTIFIER if EXCLUDE_IDENTIFIER else "",
+                    "INCLUDE_TAGS": INCLUDE_TAGS if INCLUDE_TAGS else "",
+                    "EXCLUDE_TAGS": EXCLUDE_TAGS if EXCLUDE_TAGS else "",
+                    "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": INCLUDE_IDENTIFIER_UPDATE_HEALTHY if INCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+                    "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": EXCLUDE_IDENTIFIER_UPDATE_HEALTHY if EXCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+                    "INCLUDE_TAG_UPDATE_HEALTHY": INCLUDE_TAG_UPDATE_HEALTHY if INCLUDE_TAG_UPDATE_HEALTHY else "",
+                    "EXCLUDE_TAG_UPDATE_HEALTHY": EXCLUDE_TAG_UPDATE_HEALTHY if EXCLUDE_TAG_UPDATE_HEALTHY else ""
+                }
+
                 response = {
                     "device": health_info,
                     "metrics": {
@@ -487,12 +543,15 @@ def health_check_by_identifier(identifier):
                         "counter_key_healthy_false": counter_key_healthy_false,
                         "counter_update_healthy_true": counter_update_healthy_true,
                         "counter_update_healthy_false": counter_update_healthy_false,
+                        "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
                         "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                         "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                        "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
                         "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
                     }
                 }
+                
+                if DISPLAY_SETTINGS_IN_OUTPUT:
+                    response["settings"] = settings
                 
                 return jsonify(response)
 
@@ -602,6 +661,32 @@ def health_check_unhealthy():
                 
                 unhealthy_devices.append(health_info)
 
+        settings = {
+            "TAILNET_DOMAIN": TAILNET_DOMAIN,
+            "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
+            "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
+            "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
+            "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
+            "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
+            "GLOBAL_ONLINE_HEALTHY_THRESHOLD": GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+            "GLOBAL_KEY_HEALTHY_THRESHOLD": GLOBAL_KEY_HEALTHY_THRESHOLD,
+            "GLOBAL_UPDATE_HEALTHY_THRESHOLD": GLOBAL_UPDATE_HEALTHY_THRESHOLD,
+            "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH,
+            "DISPLAY_SETTINGS_IN_OUTPUT": DISPLAY_SETTINGS_IN_OUTPUT,
+            "TIMEZONE": TIMEZONE,
+            "INCLUDE_OS": INCLUDE_OS if INCLUDE_OS else "",
+            "EXCLUDE_OS": EXCLUDE_OS if EXCLUDE_OS else "",
+            "INCLUDE_IDENTIFIER": INCLUDE_IDENTIFIER if INCLUDE_IDENTIFIER else "",
+            "EXCLUDE_IDENTIFIER": EXCLUDE_IDENTIFIER if EXCLUDE_IDENTIFIER else "",
+            "INCLUDE_TAGS": INCLUDE_TAGS if INCLUDE_TAGS else "",
+            "EXCLUDE_TAGS": EXCLUDE_TAGS if EXCLUDE_TAGS else "",
+            "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": INCLUDE_IDENTIFIER_UPDATE_HEALTHY if INCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": EXCLUDE_IDENTIFIER_UPDATE_HEALTHY if EXCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "INCLUDE_TAG_UPDATE_HEALTHY": INCLUDE_TAG_UPDATE_HEALTHY if INCLUDE_TAG_UPDATE_HEALTHY else "",
+            "EXCLUDE_TAG_UPDATE_HEALTHY": EXCLUDE_TAG_UPDATE_HEALTHY if EXCLUDE_TAG_UPDATE_HEALTHY else ""
+        }
+
         response = {
             "devices": unhealthy_devices,
             "metrics": {
@@ -619,6 +704,10 @@ def health_check_unhealthy():
                 "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
+        
+        if DISPLAY_SETTINGS_IN_OUTPUT:
+            response["settings"] = settings
+
         return jsonify(response)
 
     except Exception as e:
@@ -718,6 +807,32 @@ def health_check_healthy():
                 
                 healthy_devices.append(health_info)
 
+        settings = {
+            "TAILNET_DOMAIN": TAILNET_DOMAIN,
+            "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
+            "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
+            "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
+            "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
+            "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
+            "GLOBAL_ONLINE_HEALTHY_THRESHOLD": GLOBAL_ONLINE_HEALTHY_THRESHOLD,
+            "GLOBAL_KEY_HEALTHY_THRESHOLD": GLOBAL_KEY_HEALTHY_THRESHOLD,
+            "GLOBAL_UPDATE_HEALTHY_THRESHOLD": GLOBAL_UPDATE_HEALTHY_THRESHOLD,
+            "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH,
+            "DISPLAY_SETTINGS_IN_OUTPUT": DISPLAY_SETTINGS_IN_OUTPUT,
+            "TIMEZONE": TIMEZONE,
+            "INCLUDE_OS": INCLUDE_OS if INCLUDE_OS else "",
+            "EXCLUDE_OS": EXCLUDE_OS if EXCLUDE_OS else "",
+            "INCLUDE_IDENTIFIER": INCLUDE_IDENTIFIER if INCLUDE_IDENTIFIER else "",
+            "EXCLUDE_IDENTIFIER": EXCLUDE_IDENTIFIER if EXCLUDE_IDENTIFIER else "",
+            "INCLUDE_TAGS": INCLUDE_TAGS if INCLUDE_TAGS else "",
+            "EXCLUDE_TAGS": EXCLUDE_TAGS if EXCLUDE_TAGS else "",
+            "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": INCLUDE_IDENTIFIER_UPDATE_HEALTHY if INCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": EXCLUDE_IDENTIFIER_UPDATE_HEALTHY if EXCLUDE_IDENTIFIER_UPDATE_HEALTHY else "",
+            "INCLUDE_TAG_UPDATE_HEALTHY": INCLUDE_TAG_UPDATE_HEALTHY if INCLUDE_TAG_UPDATE_HEALTHY else "",
+            "EXCLUDE_TAG_UPDATE_HEALTHY": EXCLUDE_TAG_UPDATE_HEALTHY if EXCLUDE_TAG_UPDATE_HEALTHY else ""
+        }
+
         response = {
             "devices": healthy_devices,
             "metrics": {
@@ -735,6 +850,10 @@ def health_check_healthy():
                 "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
+        
+        if DISPLAY_SETTINGS_IN_OUTPUT:
+            response["settings"] = settings
+
         return jsonify(response)
 
     except Exception as e:

@@ -72,8 +72,20 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Healthy Devices**: List all healthy devices.
 - **Unhealthy Devices**: List all unhealthy devices.
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
+- **Display Settings**:
+  - Optional settings display in API output
+  - Configurable via DISPLAY_SETTINGS_IN_OUTPUT
+  - Secure masking of sensitive data
+  - Comprehensive configuration overview
 
 ## 📝 Release Notes
+
+### 1.2.6
+- Added capability to display settings:
+  - New DISPLAY_SETTINGS_IN_OUTPUT environment variable (default: NO)
+  - Optional display of all configuration settings in API output
+  - Secure masking of sensitive credentials (AUTH_TOKEN, OAUTH_CLIENT_SECRET)
+  - Default configuration values shown when settings are empty
 
 ### 1.2.5
 - Added update status capabilities:
@@ -199,6 +211,71 @@ Returns the health status of all devices.
 }
 ```
 
+**Example with settings output (`DISPLAY_SETTINGS_IN_OUTPUT=YES`):**
+```json
+{
+  "devices": [
+    {
+      "id": "1234567890",
+      "device": "examplehostname.example.com",
+      "machineName": "examplehostname",
+      "hostname": "examplehostname",
+      "os": "macOS",
+      "clientVersion": "v1.36.0",
+      "updateAvailable": false,
+      "update_healthy": true,
+      "lastSeen": "2025-04-09T22:03:57+02:00",
+      "online_healthy": true,
+      "keyExpiryDisabled": false,
+      "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
+      "key_healthy": true,
+      "key_days_to_expire": 25,
+      "healthy": true,
+      "tags": ["user-device", "admin-device"]
+    }
+  ],
+  "metrics": {
+    "counter_healthy_true": 1,
+    "counter_healthy_false": 0,
+    "counter_healthy_online_true": 1,
+    "counter_healthy_online_false": 0,
+    "counter_key_healthy_true": 1,
+    "counter_key_healthy_false": 0,
+    "counter_update_healthy_true": 1,
+    "counter_update_healthy_false": 0,
+    "global_healthy": true,
+    "global_key_healthy": true,
+    "global_online_healthy": true,
+    "global_update_healthy": true
+  },
+  "settings": {
+    "TAILNET_DOMAIN": "example.com",
+    "OAUTH_CLIENT_ID": "123456789abcdefg",
+    "OAUTH_CLIENT_SECRET": "********",
+    "AUTH_TOKEN": "********",
+    "ONLINE_THRESHOLD_MINUTES": 5,
+    "KEY_THRESHOLD_MINUTES": 1440,
+    "GLOBAL_HEALTHY_THRESHOLD": 100,
+    "GLOBAL_ONLINE_HEALTHY_THRESHOLD": 100,
+    "GLOBAL_KEY_HEALTHY_THRESHOLD": 100,
+    "GLOBAL_UPDATE_HEALTHY_THRESHOLD": 100,
+    "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": true,
+    "DISPLAY_SETTINGS_IN_OUTPUT": true,
+    "TIMEZONE": "Europe/Berlin",
+    "INCLUDE_OS": "",
+    "EXCLUDE_OS": "",
+    "INCLUDE_IDENTIFIER": "",
+    "EXCLUDE_IDENTIFIER": "",
+    "INCLUDE_TAGS": "",
+    "EXCLUDE_TAGS": "",
+    "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": "",
+    "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": "",
+    "INCLUDE_TAG_UPDATE_HEALTHY": "",
+    "EXCLUDE_TAG_UPDATE_HEALTHY": ""
+  }
+}
+```
+
 ### `/health/<identifier>`
 Returns the health status of a specific device by hostname, ID, or name.
 
@@ -225,6 +302,7 @@ The application is configured using environment variables:
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health.                             |
 | `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status. Example: `YES`                             |
+| `DISPLAY_SETTINGS_IN_OUTPUT`| `NO` | Whether to include configuration settings in API output. Example: `YES`                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
@@ -366,9 +444,9 @@ docker run -d -p 5000:5000 \
     -e KEY_THRESHOLD_MINUTES=1440 \
     -e GLOBAL_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
     -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
     -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
     -e INCLUDE_OS="" \
@@ -397,6 +475,7 @@ docker run -d -p 5000:5000 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
     -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
     -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
     -e INCLUDE_OS="" \
@@ -439,6 +518,7 @@ docker run -d -p 5000:5000 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
     -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
     -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
     -e INCLUDE_OS="" \
@@ -467,6 +547,7 @@ docker run -d -p 5000:5000 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
     -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
     -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
     -e INCLUDE_OS="" \
