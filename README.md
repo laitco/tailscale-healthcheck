@@ -56,6 +56,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Device Filtering**:
   - OS-based filtering with wildcards
   - Device identifier filtering (hostname, ID, name)
+  - Tag-based filtering with wildcards
   - Include/exclude filter support
 - **Key expiry**: Days until key expiry (`key_days_to_expire`)
 - **Counter Metrics**: Detailed counters for healthy/unhealthy devices
@@ -66,6 +67,13 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
 ## 📝 Release Notes
+
+### 1.2.4
+- Added tag filtering capabilities:
+  - Tag filters (INCLUDE_TAGS, EXCLUDE_TAGS)
+  - Support for wildcard patterns in filter strings
+  - Include filters take precedence over exclude filters
+  - Multiple tag matching support per device
 
 ### 1.2.3
 - Added device filtering capabilities:
@@ -149,7 +157,8 @@ Returns the health status of all devices.
       "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
       "key_healthy": true,
       "key_days_to_expire": 25,
-      "healthy": true
+      "healthy": true,
+      "tags": ["user-device", "admin-device"]
     }
   ],
   "metrics": {
@@ -196,6 +205,8 @@ The application is configured using environment variables:
 | `EXCLUDE_OS`         | `""`              | Filter to exclude specific operating systems (comma-separated, wildcards allowed)      |
 | `INCLUDE_IDENTIFIER` | `""`              | Filter to include only specific devices by identifier (comma-separated, wildcards allowed) |
 | `EXCLUDE_IDENTIFIER` | `""`              | Filter to exclude specific devices by identifier (comma-separated, wildcards allowed)  |
+| `INCLUDE_TAGS`       | `""`              | Filter to include only specific devices by tags (comma-separated, wildcards allowed) |
+| `EXCLUDE_TAGS`       | `""`              | Filter to exclude specific devices by tags (comma-separated, wildcards allowed)  |
 
 ### Response Metrics
 
@@ -258,7 +269,7 @@ To use this application with an API token, you need to generate a Tailscale API 
 
 ### Filter Configuration Examples
 
-The application supports filtering devices by OS and identifier (hostname, ID, or name) using wildcards:
+The application supports filtering devices by OS, identifier (hostname, ID, or name), and tags using wildcards:
 
 **Operating System Filters:**
 ```bash
@@ -276,6 +287,15 @@ INCLUDE_IDENTIFIER="firewall*,server*"
 
 # Exclude specific devices
 EXCLUDE_IDENTIFIER="test*,dev*,iphone*,ipad*"
+```
+
+**Tag Filters:**
+```bash
+# Include only devices with specific tags
+INCLUDE_TAGS="admin*,infra*"
+
+# Exclude specific devices by tags
+EXCLUDE_TAGS="test*,dev*"
 ```
 
 **Note**: When `INCLUDE` filters are set, `EXCLUDE` filters are ignored for that category. Empty filter values mean no filtering is applied.

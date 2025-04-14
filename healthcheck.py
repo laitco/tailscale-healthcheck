@@ -32,6 +32,8 @@ INCLUDE_OS = os.getenv("INCLUDE_OS", "").strip()
 EXCLUDE_OS = os.getenv("EXCLUDE_OS", "").strip()
 INCLUDE_IDENTIFIER = os.getenv("INCLUDE_IDENTIFIER", "").strip()
 EXCLUDE_IDENTIFIER = os.getenv("EXCLUDE_IDENTIFIER", "").strip()
+INCLUDE_TAGS = os.getenv("INCLUDE_TAGS", "").strip()
+EXCLUDE_TAGS = os.getenv("EXCLUDE_TAGS", "").strip()
 
 # Load OAuth configuration from environment variables
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
@@ -141,6 +143,23 @@ def should_include_device(device):
         device["name"].lower(),
         device["name"].split('.')[0].lower()  # machineName
     ]
+    
+    # Get device tags without 'tag:' prefix
+    device_tags = [tag.replace('tag:', '') for tag in device.get("tags", [])]
+
+    # Tag filtering - check if any device tag matches any pattern
+    if INCLUDE_TAGS and INCLUDE_TAGS.strip() != "":
+        tag_patterns = [p.strip() for p in INCLUDE_TAGS.split(",") if p.strip()]
+        if tag_patterns:
+            # Device must have at least one tag that matches any pattern
+            if not any(any(fnmatch.fnmatch(tag, pattern) for pattern in tag_patterns) for tag in device_tags):
+                return False
+    elif EXCLUDE_TAGS and EXCLUDE_TAGS.strip() != "":
+        tag_patterns = [p.strip() for p in EXCLUDE_TAGS.split(",") if p.strip()]
+        if tag_patterns:
+            # Device must not have any tag that matches any pattern
+            if any(any(fnmatch.fnmatch(tag, pattern) for pattern in tag_patterns) for tag in device_tags):
+                return False
 
     # OS filtering
     if INCLUDE_OS and INCLUDE_OS.strip() != "":
@@ -171,6 +190,11 @@ def should_include_device(device):
             return False
 
     return True
+
+def remove_tag_prefix(tags):
+    if not tags:
+        return []
+    return [tag.replace('tag:', '') for tag in tags]
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -253,7 +277,8 @@ def health_check():
                 "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                 "key_healthy": key_healthy,
                 "key_days_to_expire": key_days_to_expire,
-                "healthy": is_healthy
+                "healthy": is_healthy,
+                "tags": remove_tag_prefix(device.get("tags", []))
             }
             
             if not device.get("keyExpiryDisabled", False):
@@ -365,7 +390,8 @@ def health_check_by_identifier(identifier):
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy
+                    "healthy": online_is_healthy and key_healthy,
+                    "tags": remove_tag_prefix(device.get("tags", []))
                 }
                 
                 if not device.get("keyExpiryDisabled", False):
@@ -470,7 +496,8 @@ def health_check_unhealthy():
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy
+                    "healthy": online_is_healthy and key_healthy,
+                    "tags": remove_tag_prefix(device.get("tags", []))
                 }
                 
                 if not device.get("keyExpiryDisabled", False):
@@ -567,7 +594,8 @@ def health_check_healthy():
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy
+                    "healthy": online_is_healthy and key_healthy,
+                    "tags": remove_tag_prefix(device.get("tags", []))
                 }
                 
                 if not device.get("keyExpiryDisabled", False):
