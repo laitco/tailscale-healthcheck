@@ -24,6 +24,9 @@ KEY_THRESHOLD_MINUTES = int(os.getenv("KEY_THRESHOLD_MINUTES", 1440))  # Default
 GLOBAL_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_HEALTHY_THRESHOLD", 100))
 GLOBAL_ONLINE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_ONLINE_HEALTHY_THRESHOLD", 100))
 GLOBAL_KEY_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_KEY_HEALTHY_THRESHOLD", 100))
+GLOBAL_UPDATE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_UPDATE_HEALTHY_THRESHOLD", 100))
+UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH = os.getenv("UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH", "NO").upper() == "YES"
+
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 
@@ -34,6 +37,10 @@ INCLUDE_IDENTIFIER = os.getenv("INCLUDE_IDENTIFIER", "").strip()
 EXCLUDE_IDENTIFIER = os.getenv("EXCLUDE_IDENTIFIER", "").strip()
 INCLUDE_TAGS = os.getenv("INCLUDE_TAGS", "").strip()
 EXCLUDE_TAGS = os.getenv("EXCLUDE_TAGS", "").strip()
+INCLUDE_IDENTIFIER_UPDATE_HEALTHY = os.getenv("INCLUDE_IDENTIFIER_UPDATE_HEALTHY", "").strip()
+EXCLUDE_IDENTIFIER_UPDATE_HEALTHY = os.getenv("EXCLUDE_IDENTIFIER_UPDATE_HEALTHY", "").strip()
+INCLUDE_TAG_UPDATE_HEALTHY = os.getenv("INCLUDE_TAG_UPDATE_HEALTHY", "").strip()
+EXCLUDE_TAG_UPDATE_HEALTHY = os.getenv("EXCLUDE_TAG_UPDATE_HEALTHY", "").strip()
 
 # Load OAuth configuration from environment variables
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
@@ -191,6 +198,45 @@ def should_include_device(device):
 
     return True
 
+def should_force_update_healthy(device):
+    """
+    Check if a device should have forced update_healthy status based on identifier and tag filters
+    """
+    identifiers = [
+        device["hostname"].lower(),
+        device["id"].lower(),
+        device["name"].lower(),
+        device["name"].split('.')[0].lower()  # machineName
+    ]
+    
+    device_tags = [tag.replace('tag:', '').lower() for tag in device.get("tags", [])]
+    
+    # Check EXCLUDE_TAG_UPDATE_HEALTHY
+    if EXCLUDE_TAG_UPDATE_HEALTHY:
+        tag_patterns = [p.strip().lower() for p in EXCLUDE_TAG_UPDATE_HEALTHY.split(",") if p.strip()]
+        if tag_patterns and any(any(fnmatch.fnmatch(tag, pattern) for pattern in tag_patterns) for tag in device_tags):
+            return True
+            
+    # Check INCLUDE_TAG_UPDATE_HEALTHY
+    if INCLUDE_TAG_UPDATE_HEALTHY:
+        tag_patterns = [p.strip().lower() for p in INCLUDE_TAG_UPDATE_HEALTHY.split(",") if p.strip()]
+        if tag_patterns:
+            return not any(any(fnmatch.fnmatch(tag, pattern) for pattern in tag_patterns) for tag in device_tags)
+    
+    # Check EXCLUDE_IDENTIFIER_UPDATE_HEALTHY
+    if EXCLUDE_IDENTIFIER_UPDATE_HEALTHY:
+        patterns = [p.strip().lower() for p in EXCLUDE_IDENTIFIER_UPDATE_HEALTHY.split(",") if p.strip()]
+        if patterns and any(any(fnmatch.fnmatch(identifier, pattern) for pattern in patterns) for identifier in identifiers):
+            return True
+            
+    # Check INCLUDE_IDENTIFIER_UPDATE_HEALTHY
+    if INCLUDE_IDENTIFIER_UPDATE_HEALTHY:
+        patterns = [p.strip().lower() for p in INCLUDE_IDENTIFIER_UPDATE_HEALTHY.split(",") if p.strip()]
+        if patterns:
+            return not any(any(fnmatch.fnmatch(identifier, pattern) for pattern in patterns) for identifier in identifiers)
+            
+    return False
+
 def remove_tag_prefix(tags):
     if not tags:
         return []
@@ -228,6 +274,8 @@ def health_check():
         counter_healthy_online_false = 0
         counter_key_healthy_true = 0
         counter_key_healthy_false = 0
+        counter_update_healthy_true = 0
+        counter_update_healthy_false = 0
 
         for device in devices:
             # Apply filters
@@ -247,7 +295,11 @@ def health_check():
                 key_days_to_expire = time_until_expiry.days
 
             online_is_healthy = last_seen_local >= threshold_time
+            update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
+            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             is_healthy = online_is_healthy and key_healthy
+            if UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH:
+                is_healthy = is_healthy and update_is_healthy
 
             # Update counters
             if is_healthy:
@@ -265,6 +317,12 @@ def health_check():
             else:
                 counter_key_healthy_false += 1
 
+            # Update update healthy counters
+            if not device.get("updateAvailable", False):
+                counter_update_healthy_true += 1
+            else:
+                counter_update_healthy_false += 1
+
             machine_name = device["name"].split('.')[0]
             health_info = {
                 "id": device["id"],
@@ -272,6 +330,9 @@ def health_check():
                 "machineName": machine_name,
                 "hostname": device["hostname"],
                 "os": device["os"],
+                "clientVersion": device.get("clientVersion", ""),
+                "updateAvailable": device.get("updateAvailable", False),
+                "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
                 "lastSeen": last_seen_local.isoformat(),
                 "online_healthy": online_is_healthy,
                 "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -296,9 +357,12 @@ def health_check():
                 "counter_healthy_online_false": counter_healthy_online_false,
                 "counter_key_healthy_true": counter_key_healthy_true,
                 "counter_key_healthy_false": counter_key_healthy_false,
+                "counter_update_healthy_true": counter_update_healthy_true,
+                "counter_update_healthy_false": counter_update_healthy_false,
                 "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                 "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
+                "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
 
@@ -347,6 +411,8 @@ def health_check_by_identifier(identifier):
         counter_healthy_online_false = 0
         counter_key_healthy_true = 0
         counter_key_healthy_false = 0
+        counter_update_healthy_true = 0
+        counter_update_healthy_false = 0
 
         # Find the device with the matching hostname, ID, name, or machineName
         for device in devices:
@@ -369,7 +435,11 @@ def health_check_by_identifier(identifier):
 
                 logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
                 online_is_healthy = last_seen_local >= threshold_time
+                update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
+                key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
                 is_healthy = online_is_healthy and key_healthy
+                if UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH:
+                    is_healthy = is_healthy and update_is_healthy
 
                 # Count only this specific device
                 counter_healthy_true = 1 if is_healthy else 0
@@ -379,12 +449,21 @@ def health_check_by_identifier(identifier):
                 counter_key_healthy_true = 1 if key_healthy else 0
                 counter_key_healthy_false = 0 if key_healthy else 1
 
+                # Update update healthy counters
+                if not device.get("updateAvailable", False):
+                    counter_update_healthy_true += 1
+                else:
+                    counter_update_healthy_false += 1
+
                 health_info = {
                     "id": device["id"],
                     "device": device["name"],
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "os": device["os"],
+                    "clientVersion": device.get("clientVersion", ""),
+                    "updateAvailable": device.get("updateAvailable", False),
+                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -406,9 +485,12 @@ def health_check_by_identifier(identifier):
                         "counter_healthy_online_false": counter_healthy_online_false,
                         "counter_key_healthy_true": counter_key_healthy_true,
                         "counter_key_healthy_false": counter_key_healthy_false,
+                        "counter_update_healthy_true": counter_update_healthy_true,
+                        "counter_update_healthy_false": counter_update_healthy_false,
                         "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                         "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                        "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+                        "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
+                        "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
                     }
                 }
                 
@@ -452,6 +534,8 @@ def health_check_unhealthy():
         counter_healthy_online_false = 0
         counter_key_healthy_true = 0
         counter_key_healthy_false = 0
+        counter_update_healthy_true = 0
+        counter_update_healthy_false = 0
 
         # Check health status for each device and filter unhealthy devices
         unhealthy_devices = []
@@ -470,7 +554,11 @@ def health_check_unhealthy():
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
+            update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
+            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             is_healthy = online_is_healthy and key_healthy
+            if UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH:
+                is_healthy = is_healthy and update_is_healthy
 
             if not is_healthy:
                 # Count only unhealthy devices that will be output
@@ -484,6 +572,12 @@ def health_check_unhealthy():
                 else:
                     counter_key_healthy_true += 1
 
+                # Update update healthy counters
+                if not device.get("updateAvailable", False):
+                    counter_update_healthy_true += 1
+                else:
+                    counter_update_healthy_false += 1
+
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
                 health_info = {
                     "id": device["id"],
@@ -491,6 +585,9 @@ def health_check_unhealthy():
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "os": device["os"],
+                    "clientVersion": device.get("clientVersion", ""),
+                    "updateAvailable": device.get("updateAvailable", False),
+                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -514,9 +611,12 @@ def health_check_unhealthy():
                 "counter_healthy_online_false": counter_healthy_online_false,
                 "counter_key_healthy_true": counter_key_healthy_true,
                 "counter_key_healthy_false": counter_key_healthy_false,
+                "counter_update_healthy_true": counter_update_healthy_true,
+                "counter_update_healthy_false": counter_update_healthy_false,
                 "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                 "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
+                "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
         return jsonify(response)
@@ -556,6 +656,8 @@ def health_check_healthy():
         counter_healthy_online_false = 0
         counter_key_healthy_true = 0
         counter_key_healthy_false = 0
+        counter_update_healthy_true = 0
+        counter_update_healthy_false = 0
 
         # Check health status for each device and filter healthy devices
         healthy_devices = []
@@ -574,13 +676,23 @@ def health_check_healthy():
 
             logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
             online_is_healthy = last_seen_local >= threshold_time
+            update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
+            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             is_healthy = online_is_healthy and key_healthy
+            if UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH:
+                is_healthy = is_healthy and update_is_healthy
 
             if is_healthy:
                 # Count only healthy devices that will be output
                 counter_healthy_true += 1
                 counter_healthy_online_true += 1
                 counter_key_healthy_true += 1
+
+                # Update update healthy counters
+                if not device.get("updateAvailable", False):
+                    counter_update_healthy_true += 1
+                else:
+                    counter_update_healthy_false += 1
 
                 machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
                 health_info = {
@@ -589,6 +701,9 @@ def health_check_healthy():
                     "machineName": machine_name,
                     "hostname": device["hostname"],
                     "os": device["os"],
+                    "clientVersion": device.get("clientVersion", ""),
+                    "updateAvailable": device.get("updateAvailable", False),
+                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
                     "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
@@ -612,9 +727,12 @@ def health_check_healthy():
                 "counter_healthy_online_false": counter_healthy_online_false,
                 "counter_key_healthy_true": counter_key_healthy_true,
                 "counter_key_healthy_false": counter_key_healthy_false,
+                "counter_update_healthy_true": counter_update_healthy_true,
+                "counter_update_healthy_false": counter_update_healthy_false,
                 "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
                 "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD
+                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
+                "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
             }
         }
         return jsonify(response)

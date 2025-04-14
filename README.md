@@ -49,10 +49,17 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Overall Health Status**: Combined health status based on:
   - Device online status (`online_healthy`)
   - Device key expiry status (`key_healthy`)
+  - Device update status (`update_healthy`, optional)
 - **Global Health Metrics**: 
   - Global device health status (`global_healthy`)
   - Global online status (`global_online_healthy`)
   - Global key health status (`global_key_healthy`)
+  - Global update status (`global_update_healthy`)
+- **Update Status**:
+  - Update availability status
+  - Client version tracking
+  - Update health filtering with wildcards
+  - Include/exclude update filter support by identifier and tags
 - **Device Filtering**:
   - OS-based filtering with wildcards
   - Device identifier filtering (hostname, ID, name)
@@ -67,6 +74,17 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
 
 ## 📝 Release Notes
+
+### 1.2.5
+- Added update status capabilities:
+  - Update health status with `update_healthy` field
+  - Client version tracking with `clientVersion` field
+  - Update availability status with `updateAvailable` field
+  - New global update health metric `global_update_healthy`
+  - Configurable update health threshold with `GLOBAL_UPDATE_HEALTHY_THRESHOLD`
+  - Optional inclusion of update health in overall health status via `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`
+  - Update health filtering by identifier (INCLUDE_IDENTIFIER_UPDATE_HEALTHY, EXCLUDE_IDENTIFIER_UPDATE_HEALTHY)
+  - Update health filtering by tags (INCLUDE_TAG_UPDATE_HEALTHY, EXCLUDE_TAG_UPDATE_HEALTHY)
 
 ### 1.2.4
 - Added tag filtering capabilities:
@@ -151,6 +169,9 @@ Returns the health status of all devices.
       "machineName": "examplehostname",
       "hostname": "examplehostname",
       "os": "macOS",
+      "clientVersion": "v1.36.0",
+      "updateAvailable": false,
+      "update_healthy": true,
       "lastSeen": "2025-04-09T22:03:57+02:00",
       "online_healthy": true,
       "keyExpiryDisabled": false,
@@ -168,9 +189,12 @@ Returns the health status of all devices.
     "counter_healthy_online_false": 0,
     "counter_key_healthy_true": 1,
     "counter_key_healthy_false": 0,
+    "counter_update_healthy_true": 1,
+    "counter_update_healthy_false": 0,
     "global_key_healthy": true,
     "global_online_healthy": true,
-    "global_healthy": true
+    "global_healthy": true,
+    "global_update_healthy": true
   }
 }
 ```
@@ -199,6 +223,8 @@ The application is configured using environment variables:
 | `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
 | `GLOBAL_ONLINE_HEALTHY_THRESHOLD`| `100`        | The threshold for total online health.                                       |
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
+| `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health. Example: YES | NO                             |
+| `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status.                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
@@ -207,6 +233,10 @@ The application is configured using environment variables:
 | `EXCLUDE_IDENTIFIER` | `""`              | Filter to exclude specific devices by identifier (comma-separated, wildcards allowed)  |
 | `INCLUDE_TAGS`       | `""`              | Filter to include only specific devices by tags (comma-separated, wildcards allowed) |
 | `EXCLUDE_TAGS`       | `""`              | Filter to exclude specific devices by tags (comma-separated, wildcards allowed)  |
+| `INCLUDE_IDENTIFIER_UPDATE_HEALTHY` | `""`              | Filter to include only specific devices by identifier for update health (comma-separated, wildcards allowed) |
+| `EXCLUDE_IDENTIFIER_UPDATE_HEALTHY` | `""`              | Filter to exclude specific devices by identifier for update health (comma-separated, wildcards allowed)  |
+| `INCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to include only specific devices by tags for update health (comma-separated, wildcards allowed) |
+| `EXCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to exclude specific devices by tags for update health (comma-separated, wildcards allowed)  |
 
 ### Response Metrics
 
@@ -221,6 +251,7 @@ The API response includes the following health metrics:
 - `global_key_healthy`: True if key_healthy_false count is below threshold
 - `global_online_healthy`: True if healthy_online_false count is below threshold
 - `global_healthy`: True if healthy_false count is below threshold
+- `global_update_healthy`: True if update_healthy_false count is below threshold
 
 These global metrics become false when their respective false counters exceed the GLOBAL_UNHEALTHY_THRESHOLD.
 
@@ -298,6 +329,21 @@ INCLUDE_TAGS="admin*,infra*"
 EXCLUDE_TAGS="test*,dev*"
 ```
 
+**Update Health Filters:**
+```bash
+# Include only devices with specific identifiers for update health
+INCLUDE_IDENTIFIER_UPDATE_HEALTHY="firewall*,server*"
+
+# Exclude specific devices by identifiers for update health
+EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="test*,dev*,iphone*,ipad*"
+
+# Include only devices with specific tags for update health
+INCLUDE_TAG_UPDATE_HEALTHY="admin*,infra*"
+
+# Exclude specific devices by tags for update health
+EXCLUDE_TAG_UPDATE_HEALTHY="test*,dev*"
+```
+
 **Note**: When `INCLUDE` filters are set, `EXCLUDE` filters are ignored for that category. Empty filter values mean no filtering is applied.
 
 ## 🐳 Running with Docker
@@ -318,7 +364,23 @@ docker run -d -p 5000:5000 \
     -e AUTH_TOKEN="your-api-key" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e GLOBAL_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
+    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
+    -e INCLUDE_OS="" \
+    -e EXCLUDE_OS="" \
+    -e INCLUDE_IDENTIFIER="" \
+    -e EXCLUDE_IDENTIFIER="" \
+    -e INCLUDE_TAGS="" \
+    -e EXCLUDE_TAGS="" \
+    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
+    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
 
@@ -329,7 +391,24 @@ docker run -d -p 5000:5000 \
     -e OAUTH_CLIENT_ID="your-oauth-client-id" \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
+    -e KEY_THRESHOLD_MINUTES=1440 \
+    -e GLOBAL_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
+    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
+    -e INCLUDE_OS="" \
+    -e EXCLUDE_OS="" \
+    -e INCLUDE_IDENTIFIER="" \
+    -e EXCLUDE_IDENTIFIER="" \
+    -e INCLUDE_TAGS="" \
+    -e EXCLUDE_TAGS="" \
+    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
+    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
 
@@ -355,7 +434,23 @@ docker run -d -p 5000:5000 \
     -e AUTH_TOKEN="your-api-key" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e GLOBAL_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
+    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
+    -e INCLUDE_OS="" \
+    -e EXCLUDE_OS="" \
+    -e INCLUDE_IDENTIFIER="" \
+    -e EXCLUDE_IDENTIFIER="" \
+    -e INCLUDE_TAGS="" \
+    -e EXCLUDE_TAGS="" \
+    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
+    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
 
@@ -366,7 +461,24 @@ docker run -d -p 5000:5000 \
     -e OAUTH_CLIENT_ID="your-oauth-client-id" \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
+    -e KEY_THRESHOLD_MINUTES=1440 \
+    -e GLOBAL_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
+    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
+    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
+    -e PORT=5000 \
     -e TIMEZONE="Europe/Berlin" \
+    -e INCLUDE_OS="" \
+    -e EXCLUDE_OS="" \
+    -e INCLUDE_IDENTIFIER="" \
+    -e EXCLUDE_IDENTIFIER="" \
+    -e INCLUDE_TAGS="" \
+    -e EXCLUDE_TAGS="" \
+    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
+    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
+    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
     --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
 
