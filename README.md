@@ -223,8 +223,8 @@ The application is configured using environment variables:
 | `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
 | `GLOBAL_ONLINE_HEALTHY_THRESHOLD`| `100`        | The threshold for total online health.                                       |
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
-| `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health. Example: YES | NO                             |
-| `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status.                             |
+| `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health.                             |
+| `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status. Example: `YES`                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
