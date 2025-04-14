@@ -52,6 +52,10 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Global device health status (`global_healthy`)
   - Global online status (`global_online_healthy`)
   - Global key health status (`global_key_healthy`)
+- **Device Filtering**:
+  - OS-based filtering with wildcards
+  - Device identifier filtering (hostname, ID, name)
+  - Include/exclude filter support
 - **Key expiry**: Days until key expiry (`key_days_to_expire`)
 - **Counter Metrics**: Detailed counters for healthy/unhealthy devices
 - **Health Status**: Check the health of all devices in the Tailscale network.
@@ -186,7 +190,7 @@ The application is configured using environment variables:
 | `GLOBAL_ONLINE_HEALTHY_THRESHOLD`| `100`        | The threshold for total online health.                                       |
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `PORT`               | `5000`            | The port the application runs on.                                          |
-| `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments.                                   |
+| `TIMEZONE`           | `UTC`             | The timezone for `lastSeen`. Example: `Europe/Berlin`  adjustments.                                   |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
 | `EXCLUDE_OS`         | `""`              | Filter to exclude specific operating systems (comma-separated, wildcards allowed)      |
 | `INCLUDE_IDENTIFIER` | `""`              | Filter to include only specific devices by identifier (comma-separated, wildcards allowed) |
