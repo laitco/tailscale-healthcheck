@@ -27,14 +27,14 @@ jobs:
         run: |
           docker push laitco/tailscale-healthcheck:latest
 
-      - name: Build Docker image 1.2.6
+      - name: Build Docker image 1.2.6.1
         run: |
-          docker build -t laitco/tailscale-healthcheck:1.2.6 .
+          docker build -t laitco/tailscale-healthcheck:1.2.6.1 .
 
-      - name: Validate Docker image 1.2.6
+      - name: Validate Docker image 1.2.6.1
         run: |
-          docker run --rm laitco/tailscale-healthcheck:1.2.6 --help
+          docker run --rm laitco/tailscale-healthcheck:1.2.6.1 --help
 
-      - name: Push Docker image 1.2.6
+      - name: Push Docker image 1.2.6.1
         run: |
-          docker push laitco/tailscale-healthcheck:1.2.6
+          docker push laitco/tailscale-healthcheck:1.2.6.1
