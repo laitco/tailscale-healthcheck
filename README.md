@@ -80,6 +80,10 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## 📝 Release Notes
 
+### 1.2.6.1
+- Fixed: Support for ISO 8601 timestamps with fractional seconds from Tailscale API using `dateutil.parser`.
+- Added: `python-dateutil` to requirements for robust timestamp parsing.
+
 ### 1.2.6
 - Added capability to display settings:
   - New DISPLAY_SETTINGS_IN_OUTPUT environment variable (default: NO)

@@ -8,6 +8,7 @@ from threading import Timer  # For token renewal
 from urllib3.exceptions import ProtocolError  # Add import for better error handling
 from http.client import RemoteDisconnected  # Add import for better error handling
 import fnmatch  # Add for wildcard pattern matching
+from dateutil import parser  # Add this import
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -283,13 +284,13 @@ def health_check():
             if not should_include_device(device):
                 continue
 
-            last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
             key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
@@ -451,13 +452,13 @@ def health_check_by_identifier(identifier):
                 device["id"].lower() == identifier_lower or
                 device["name"].lower() == identifier_lower or
                 machine_name.lower() == identifier_lower):
-                last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
                 last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
                 expires = None
                 key_healthy = True if device.get("keyExpiryDisabled", False) else True
                 key_days_to_expire = None
                 if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                    expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                    expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
                     expires = expires.astimezone(tz)
                     time_until_expiry = expires - datetime.now(tz)
                     key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
@@ -599,13 +600,13 @@ def health_check_unhealthy():
         # Check health status for each device and filter unhealthy devices
         unhealthy_devices = []
         for device in devices:
-            last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
             key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
@@ -751,13 +752,13 @@ def health_check_healthy():
         # Check health status for each device and filter healthy devices
         healthy_devices = []
         for device in devices:
-            last_seen = datetime.strptime(device["lastSeen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
             last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
             key_days_to_expire = None
             if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = datetime.strptime(device["expires"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
                 expires = expires.astimezone(tz)
                 time_until_expiry = expires - datetime.now(tz)
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
