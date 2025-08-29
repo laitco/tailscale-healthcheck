@@ -348,7 +348,7 @@ The application is configured using environment variables:
 - Enabled by default with `CACHE_TTL_SECONDS=60`.
 - Disable by setting `CACHE_ENABLED=NO`.
 - The app caches the JSON from the Tailscale `devices` API and reuses it across requests for the configured TTL.
-- Invalidation: call `POST /health/cache/invalidate` (or `GET`) to clear the cache immediately.
+- Invalidation: call `GET /health/cache/invalidate` to clear the cache immediately.
 - Security: cached data contains only device info from the API; secrets remain masked elsewhere.
 
 #### Shared Cache Across Gunicorn Workers
@@ -356,6 +356,12 @@ The application is configured using environment variables:
 - By default (`CACHE_BACKEND=MEMORY`), each Gunicorn worker has its own in-memory cache.
 - File-based shared cache on a single host: set `CACHE_BACKEND=FILE` and optionally `CACHE_FILE_PATH` to a writable path (e.g., `/tmp/tailscale-healthcheck-cache.json`). The app performs atomic writes and uses file locking for safe concurrent access.
 - Distributed shared cache across instances: set `CACHE_BACKEND=REDIS` and provide `REDIS_URL`.
+
+### Read-Only Proxy
+
+- The proxy enforces read-only access: only `GET`, `HEAD`, and `OPTIONS` are allowed.
+- Modifying methods (`POST`, `PUT`, `PATCH`, `DELETE`) are blocked with `403 Forbidden` and attempts are logged for auditing.
+- This behavior is not user-configurable by design.
 
 ### Response Metrics
 

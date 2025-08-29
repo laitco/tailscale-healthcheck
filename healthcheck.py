@@ -45,6 +45,9 @@ PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 HTTP_TIMEOUT = os.getenv("HTTP_TIMEOUT", "10").strip()
 
+# HTTP method restrictions (read-only proxy, not user-configurable)
+ALLOWED_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
+
 # Caching configuration
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "YES").upper() == "YES"
 try:
@@ -269,6 +272,32 @@ if os.getenv("GUNICORN_MASTER_PROCESS", "false").lower() == "true":
 
 # Log the configured timezone
 logging.debug(f"Configured TIMEZONE: {TIMEZONE}")
+
+@app.before_request
+def enforce_read_only_methods():
+    """Reject non-read methods with a 403 to enforce read-only proxy.
+
+    Allowed methods are strictly GET, HEAD, and OPTIONS (not configurable).
+    """
+    method = request.method.upper()
+    if method not in ALLOWED_HTTP_METHODS:
+        logging.warning(
+            "Blocked disallowed method",
+            extra={
+                "event": "method_blocked",
+                "method": method,
+                "path": request.path,
+                "remote_addr": request.remote_addr,
+            },
+        )
+        return (
+            jsonify({
+                "error": "Forbidden: method not allowed on read-only proxy",
+                "method": method,
+                "allowed_methods": sorted(ALLOWED_HTTP_METHODS),
+            }),
+            403,
+        )
 
 def make_authenticated_request(url, headers):
     """
@@ -1027,7 +1056,7 @@ def health_check_healthy():
         logging.error(f"Error in health_check_healthy: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/health/cache/invalidate', methods=['POST', 'GET'])
+@app.route('/health/cache/invalidate', methods=['GET'])
 def cache_invalidate():
     """Invalidate the in-memory cache.
 

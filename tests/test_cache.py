@@ -183,8 +183,8 @@ def test_cache_invalidate_endpoint(monkeypatch):
     assert r2.status_code == 200
     assert calls["count"] == 1
 
-    # Invalidate cache
-    inv = client.post("/health/cache/invalidate")
+    # Invalidate cache (read-only safe via GET)
+    inv = client.get("/health/cache/invalidate")
     assert inv.status_code == 200
     data = inv.get_json()
     assert "message" in data
