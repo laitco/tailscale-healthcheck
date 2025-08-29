@@ -13,6 +13,7 @@ try:  # Optional dependency; app runs without rate limiting if unavailable
 except Exception:  # pragma: no cover - import guard
     Limiter = None  # type: ignore
     _HAVE_FLASK_LIMITER = False
+    
     def get_remote_address():  # type: ignore
         return request.remote_addr
 import pytz
