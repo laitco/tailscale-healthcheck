@@ -6,10 +6,6 @@ on:
       version:
         description: "Release version (e.g., 1.2.3 or 1.2.3.4)"
         required: true
-      ai_rewrite:
-        description: "Use AI to polish release notes (English)"
-        required: false
-        default: 'true'
       prerelease:
         description: "Mark as pre-release"
         required: false
@@ -50,6 +46,9 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Determine previous tag for accurate note range, if any
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Generate default release notes (GitHub)
         id: gen_notes
@@ -57,100 +56,24 @@ jobs:
         with:
           script: |
             const version = process.env.VERSION;
+            const prev = process.env.PREV_TAG;
             // Ask GitHub to generate release notes text (English, includes PRs & commits)
-            const notes = await github.rest.repos.generateReleaseNotes({
+            const payload = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: version,
-              target_commitish: context.sha
-            });
+              target_commitish: context.sha,
+            };
+            if (prev) payload.previous_tag_name = prev;
+            const notes = await github.rest.repos.generateReleaseNotes(payload);
             core.setOutput('body', notes.data.body || '');
           result-encoding: string
         env:
           VERSION: ${{ steps.validate.outputs.version }}
-
-      - name: Ensure OpenAI key when AI enabled
-        if: ${{ inputs.ai_rewrite == 'true' }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "ai_rewrite is enabled but OPENAI_API_KEY is not set" >&2
-            exit 1
-          fi
-
-      - name: Rewrite notes via OpenAI
-        id: ai_openai
-        if: ${{ inputs.ai_rewrite == 'true' }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          RAW_NOTES: ${{ steps.gen_notes.outputs.body }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "OPENAI_API_KEY is required for AI rewrite" >&2
-            exit 1
-          fi
-          # Use requested default model; allow override via OPENAI_MODEL secret/env
-          MODEL="${OPENAI_MODEL:-gpt-5-mini}"
-          PROMPT=$(cat << 'EOF'
-          Rewrite the following GitHub release notes into a clear, concise, user-friendly English changelog.
-          - Keep technical accuracy.
-          - Group related changes.
-          - Prefer imperative bullet points.
-          - Include notable PRs/issues in parentheses when helpful.
-          - Keep it under ~60 lines.
-          ---
-          EOF
-          )
-          CONTENT="$PROMPT$RAW_NOTES"
-          # Build JSON payload safely with jq to avoid quoting issues
-          PAYLOAD=$(jq -n \
-            --arg model "$MODEL" \
-            --arg sys "You are an expert technical writer." \
-            --arg content "$CONTENT" \
-            '{model:$model, messages:[{role:"system", content:$sys},{role:"user", content:$content}]}')
-          # Make request and capture HTTP status + body for clear error diagnostics
-          TMP_RESP=$(mktemp)
-          HTTP_CODE=$(curl -sS -o "$TMP_RESP" -w "%{http_code}" https://api.openai.com/v1/chat/completions \
-            -H "Authorization: Bearer $OPENAI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "OpenAI API error ($HTTP_CODE):" >&2
-            jq -r '.error.message // .error // . | tostring' "$TMP_RESP" >&2 || cat "$TMP_RESP" >&2
-            rm -f "$TMP_RESP"
-            exit 1
-          fi
-          POLISHED=$(jq -r '.choices[0].message.content // empty' "$TMP_RESP")
-          rm -f "$TMP_RESP"
-          if [ -z "$POLISHED" ]; then
-            echo "OpenAI returned success but no content. Failing per policy." >&2
-            exit 1
-          fi
-          ATTR_NOTE=$'\n\nNote: These release notes were AI-generated from commits and pull requests.'
-          {
-            echo "body<<__NOTES__"
-            echo "$POLISHED$ATTR_NOTE"
-            echo "__NOTES__"
-          } >> "$GITHUB_OUTPUT"
-      - name: Create GitHub Release (AI)
-        id: create_release_ai
-        if: ${{ inputs.ai_rewrite == 'true' }}
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.validate.outputs.version }}
-          release_name: ${{ steps.validate.outputs.version }}
-          draft: false
-          prerelease: ${{ fromJSON(inputs.prerelease) }}
-          body: ${{ steps.ai_openai.outputs.body }}
+          PREV_TAG: ${{ steps.validate.outputs.prev_tag }}
 
       - name: Create GitHub Release
-        id: create_release_plain
-        if: ${{ inputs.ai_rewrite != 'true' }}
+        id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -164,4 +87,4 @@ jobs:
       - name: Summary
         run: |
           echo "Created release ${{ steps.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "Release URL: ${{ steps.create_release_ai.outputs.html_url || steps.create_release_plain.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "Release URL: ${{ steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
