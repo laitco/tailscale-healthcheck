@@ -6,6 +6,15 @@ import requests
 import random
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, redirect, request
+try:  # Optional dependency; app runs without rate limiting if unavailable
+    from flask_limiter import Limiter  # type: ignore
+    from flask_limiter.util import get_remote_address  # type: ignore
+    _HAVE_FLASK_LIMITER = True
+except Exception:  # pragma: no cover - import guard
+    Limiter = None  # type: ignore
+    _HAVE_FLASK_LIMITER = False
+    def get_remote_address():  # type: ignore
+        return request.remote_addr
 import pytz
 import logging  # Add logging for debugging
 from threading import Timer  # For token renewal
@@ -45,6 +54,123 @@ DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 HTTP_TIMEOUT = os.getenv("HTTP_TIMEOUT", "10").strip()
+
+# Rate limiting configuration
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "YES").strip().upper() == "YES"
+# Integer only, interpreted as per-minute. 0 disables.
+try:
+    RATE_LIMIT_PER_IP = int(os.getenv("RATE_LIMIT_PER_IP", "100").strip() or "100")
+    if RATE_LIMIT_PER_IP < 0:
+        RATE_LIMIT_PER_IP = 0
+except Exception:
+    RATE_LIMIT_PER_IP = 100
+_rl_global_int = os.getenv("RATE_LIMIT_GLOBAL", "").strip()
+try:
+    RATE_LIMIT_GLOBAL_INT = int(_rl_global_int) if _rl_global_int != "" else 0
+    if RATE_LIMIT_GLOBAL_INT < 0:
+        RATE_LIMIT_GLOBAL_INT = 0
+except Exception:
+    RATE_LIMIT_GLOBAL_INT = 0
+RATE_LIMIT_STORAGE_URL = os.getenv(
+    "RATE_LIMIT_STORAGE_URL",
+    "file:///tmp/tailscale-healthcheck-ratelimit.json",
+).strip() or None
+RATE_LIMIT_HEADERS_ENABLED = os.getenv("RATE_LIMIT_HEADERS_ENABLED", "YES").strip().upper() == "YES"
+
+# Initialize rate limiter (no-op if disabled)
+limiter = None
+_USE_FILE_RATE_LIMIT = False
+_RATE_LIMIT_FILE_PATH = None
+if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL and RATE_LIMIT_STORAGE_URL.startswith("file://"):
+    _USE_FILE_RATE_LIMIT = True
+    _RATE_LIMIT_FILE_PATH = RATE_LIMIT_STORAGE_URL[len("file://"):]
+elif RATE_LIMIT_ENABLED and _HAVE_FLASK_LIMITER:
+    try:
+        limiter = Limiter(
+            key_func=get_remote_address,
+            app=app,
+            storage_uri=RATE_LIMIT_STORAGE_URL,  # Memory by default; can use Redis/etc via env
+            default_limits=[],
+            headers_enabled=RATE_LIMIT_HEADERS_ENABLED,
+        )
+    except Exception as e:  # pragma: no cover - initialization failure
+        logging.error(f"Failed to initialize rate limiter: {e}. Disabling rate limits.")
+        limiter = None
+        RATE_LIMIT_ENABLED = False
+elif RATE_LIMIT_ENABLED and not _HAVE_FLASK_LIMITER:
+    logging.warning("RATE_LIMIT_ENABLED=YES but Flask-Limiter is not installed. Rate limiting disabled.")
+
+def _apply_limits(fn):
+    """Decorator to apply configured limits to a view function."""
+    if not RATE_LIMIT_ENABLED or (limiter is None and not _USE_FILE_RATE_LIMIT):
+        return fn
+    wrapped = fn
+    # If using Flask-Limiter, apply decorator-based limits
+    if limiter is not None:
+        if RATE_LIMIT_PER_IP > 0:
+            wrapped = limiter.limit(f"{RATE_LIMIT_PER_IP} per minute")(wrapped)
+        if RATE_LIMIT_GLOBAL_INT > 0:
+            wrapped = limiter.shared_limit(f"{RATE_LIMIT_GLOBAL_INT} per minute", scope="global")(wrapped)
+        return wrapped
+    # File-based limiter uses a before_request hook; no-op here
+    return wrapped
+
+# File-based rate limit state helpers (fixed 1-minute windows)
+def _rl_file_load():
+    if not _RATE_LIMIT_FILE_PATH:
+        return None
+    try:
+        with open(_RATE_LIMIT_FILE_PATH, "r") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            try:
+                obj = json.load(fh)
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return obj
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+def _rl_file_save(obj):
+    if not _RATE_LIMIT_FILE_PATH:
+        return
+    try:
+        directory = os.path.dirname(_RATE_LIMIT_FILE_PATH) or "."
+        os.makedirs(directory, exist_ok=True)
+        tmp_path = f"{_RATE_LIMIT_FILE_PATH}.tmp"
+        with open(tmp_path, "w") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            json.dump(obj, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        os.replace(tmp_path, _RATE_LIMIT_FILE_PATH)
+    except Exception:
+        pass
+
+def _file_rate_limit_check_and_inc(ip):
+    now = int(time.time())
+    window_start = now - (now % 60)  # minute window
+    state = _rl_file_load() or {}
+    if state.get("window_start") != window_start:
+        state = {"window_start": window_start, "per_ip": {}, "global": 0}
+    # Check per-IP
+    if RATE_LIMIT_PER_IP > 0:
+        ip_count = int(state["per_ip"].get(ip, 0))
+        if ip_count >= RATE_LIMIT_PER_IP:
+            _rl_file_save(state)  # persist unchanged state
+            return False, f"Per-IP limit {RATE_LIMIT_PER_IP}/min exceeded"
+        state["per_ip"][ip] = ip_count + 1
+    # Check global
+    if RATE_LIMIT_GLOBAL_INT > 0:
+        global_count = int(state.get("global", 0))
+        if global_count >= RATE_LIMIT_GLOBAL_INT:
+            _rl_file_save(state)
+            return False, f"Global limit {RATE_LIMIT_GLOBAL_INT}/min exceeded"
+        state["global"] = global_count + 1
+    _rl_file_save(state)
+    return True, None
 
 # Retry/backoff configuration
 def _get_int_env(name: str, default: int) -> int:
@@ -321,6 +447,50 @@ def enforce_read_only_methods():
             }),
             403,
         )
+    # No return -> continue when allowed
+
+@app.before_request
+def _enforce_file_rate_limits():
+    if not RATE_LIMIT_ENABLED or not _USE_FILE_RATE_LIMIT:
+        return None
+    # Apply only to read methods we allow
+    if request.method.upper() not in ALLOWED_HTTP_METHODS:
+        return None
+    ip = request.remote_addr or "unknown"
+    allowed, reason = _file_rate_limit_check_and_inc(ip)
+    if not allowed:
+        logging.warning(
+            "Rate limit exceeded (file backend)",
+            extra={
+                "event": "rate_limit_exceeded",
+                "remote_addr": request.remote_addr,
+                "path": request.path,
+                "detail": reason,
+            },
+        )
+        return jsonify({"error": "Too Many Requests", "details": reason}), 429
+    return None
+
+try:
+    from flask_limiter.errors import RateLimitExceeded
+except Exception:  # pragma: no cover - import guard
+    RateLimitExceeded = Exception  # type: ignore
+
+@app.errorhandler(429)
+def handle_429(e):  # Flask will pass the exception
+    # Flask-Limiter raises RateLimitExceeded; ensure consistent JSON
+    msg = "Too Many Requests"
+    detail = getattr(e, "description", None) or str(e)
+    logging.warning(
+        "Rate limit exceeded",
+        extra={
+            "event": "rate_limit_exceeded",
+            "remote_addr": request.remote_addr,
+            "path": request.path,
+            "detail": detail,
+        },
+    )
+    return jsonify({"error": msg, "details": detail}), 429
 
 def make_authenticated_request(url, headers):
     """
@@ -507,6 +677,7 @@ def remove_tag_prefix(tags):
     return [tag.replace('tag:', '') for tag in tags]
 
 @app.route('/health', methods=['GET'])
+@_apply_limits
 def health_check():
     try:
         # Fetch devices (uses cache if enabled)
@@ -664,11 +835,13 @@ def health_check():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health/', methods=['GET'])
+@_apply_limits
 def health_check_redirect():
     # Redirect to /health without trailing slash
     return redirect('/health', code=301)
 
 @app.route('/health/<identifier>', methods=['GET'])
+@_apply_limits
 def health_check_by_identifier(identifier):
     try:
         # Fetch devices (uses cache if enabled)
@@ -823,6 +996,7 @@ def health_check_by_identifier(identifier):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health/unhealthy', methods=['GET'])
+@_apply_limits
 def health_check_unhealthy():
     try:
         # Fetch devices (uses cache if enabled)
@@ -972,6 +1146,7 @@ def health_check_unhealthy():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health/healthy', methods=['GET'])
+@_apply_limits
 def health_check_healthy():
     try:
         # Fetch devices (uses cache if enabled)
@@ -1115,6 +1290,7 @@ def health_check_healthy():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health/cache/invalidate', methods=['GET'])
+@_apply_limits
 def cache_invalidate():
     """Invalidate the in-memory cache.
 

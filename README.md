@@ -30,6 +30,7 @@
   - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
   - [Logging](#logging)
+  - [Rate Limiting](#rate-limiting)
 - [🐳 Running with Docker](#-running-with-docker)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
@@ -346,6 +347,28 @@ The application is configured using environment variables:
 - Default log level is `INFO` in both Flask and Gunicorn.
 - Enable debug logging explicitly by setting `LOG_LEVEL=DEBUG`.
 - Sensitive values are masked where logged; avoid enabling DEBUG in production.
+
+### Rate Limiting
+
+- Protects against abusive or accidental high-frequency requests.
+- Returns JSON 429 with `{ "error": "Too Many Requests" }`.
+
+Environment variables:
+- `RATE_LIMIT_ENABLED`: Enable/disable rate limiting. Default `YES`.
+- `RATE_LIMIT_PER_IP`: Integer requests per minute per client IP. Default `100`. `0` disables.
+- `RATE_LIMIT_GLOBAL`: Optional integer requests per minute across all clients/endpoints. Empty/`0` disables.
+- `RATE_LIMIT_STORAGE_URL`: Optional storage for shared enforcement across processes/instances.
+  - Default: `file:///tmp/tailscale-healthcheck-ratelimit.json` (file-backed on single host)
+  - Redis: `redis://host:6379/0` (Flask-Limiter)
+  - Empty: in-memory per-process
+- `RATE_LIMIT_HEADERS_ENABLED`: Include standard rate-limit headers when Flask-Limiter is active. Default `YES`.
+
+Notes:
+- Per-IP and global limits can be used together; exceeding either returns `429`.
+- With multiple Gunicorn workers:
+  - Without storage configured, limits apply per worker (in-memory).
+  - With `redis://`, limits are shared across workers/instances (Flask-Limiter backend).
+  - With `file://`, limits are shared on a single host via a JSON file with file locking.
 
 ### Caching
 
