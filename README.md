@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml?branch=main" alt="GitHub Workflow Status">
   <img src="https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck" alt="Docker Pulls">
   <img src="https://img.shields.io/github/license/laitco/tailscale-healthcheck" alt="License">
-  <img src="https://img.shields.io/badge/python-3.9-blue" alt="Python Version">
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
   <img src="https://img.shields.io/badge/code%20style-flake8-blue" alt="Code Style">
   <img src="https://img.shields.io/badge/coverage-90%25-brightgreen" alt="Test Coverage">
   <img src="https://img.shields.io/github/last-commit/laitco/tailscale-healthcheck" alt="Last Commit">

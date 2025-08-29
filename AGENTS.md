@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `healthcheck.py`: Flask app with `/health*` endpoints and Tailscale API integration.
 - `gunicorn_config.py`: Startup hooks, timeouts, OAuth init in master process.
-- `Dockerfile`: Production image (Python 3.9, Gunicorn) with healthcheck.
+- `Dockerfile`: Production image (Python 3.12, Gunicorn) with healthcheck.
 - `.github/workflows/`: CI to build and publish Docker images.
 - `requirements.txt`: Runtime deps (`flask`, `requests`, `pytz`, `gunicorn`, `python-dateutil`).
 - `README.md`: Usage, config, and Docker instructions.
@@ -25,7 +25,7 @@
   - `docker run -p 5000:5000 --env-file .env tailscale-healthcheck`
 
 ## Coding Style & Naming Conventions
-- Python 3.9, 4-space indentation, UTF-8.
+- Python 3.12, 4-space indentation, UTF-8.
 - Names: `snake_case` functions/variables, `PascalCase` classes, modules in `lower_snake_case.py`.
 - Keep routes idempotent and JSON-only; avoid trailing-slash redirects (already handled).
 - Prefer small pure helpers (e.g., `should_include_device`) with clear docstrings.
