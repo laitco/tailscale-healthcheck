@@ -40,6 +40,18 @@ DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper
 
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
+HTTP_TIMEOUT = os.getenv("HTTP_TIMEOUT", "10").strip()
+
+def get_http_timeout(default: float = 10.0) -> float:
+    """Return HTTP timeout (seconds) from `HTTP_TIMEOUT` env var.
+
+    Falls back to `default` if unset/invalid. Ensures a positive float.
+    """
+    try:
+        value = float(HTTP_TIMEOUT) if HTTP_TIMEOUT != "" else float(default)
+        return value if value > 0 else float(default)
+    except Exception:
+        return float(default)
 
 # Filter configurations
 INCLUDE_OS = os.getenv("INCLUDE_OS", "").strip()
@@ -75,7 +87,8 @@ def fetch_oauth_token():
             data={
                 "client_id": OAUTH_CLIENT_ID,
                 "client_secret": OAUTH_CLIENT_SECRET
-            }
+            },
+            timeout=get_http_timeout()
         )
         response.raise_for_status()
         token_data = response.json()
@@ -101,6 +114,9 @@ def fetch_oauth_token():
                 logging.info(f"OAuth access token renewed at {datetime.utcnow().isoformat()} UTC.")
         else:
             IS_INITIAL_FETCH = False  # Mark the initial fetch as complete
+    except requests.exceptions.Timeout as to_err:
+        logging.warning(f"Timeout during token fetch after {get_http_timeout()}s: {to_err}")
+        ACCESS_TOKEN = None
     except requests.exceptions.HTTPError as http_err:
         logging.error(f"HTTP error during token fetch: {http_err}")
         if response.status_code == 401:
@@ -133,18 +149,21 @@ def make_authenticated_request(url, headers):
     Makes an authenticated request to the given URL and handles 401 errors by refreshing the token.
     """
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=get_http_timeout())
         if response.status_code == 401:
             logging.error("Unauthorized error (401). Attempting to refresh OAuth token...")
             fetch_oauth_token()  # Immediately refresh the token
             if ACCESS_TOKEN:  # Retry the request with the new token
                 headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
-                response = requests.get(url, headers=headers)
+                response = requests.get(url, headers=headers, timeout=get_http_timeout())
         response.raise_for_status()
         return response
     except (RemoteDisconnected, ProtocolError) as e:
         logging.error(f"Connection error during authenticated request: {e}. Retrying...")
         return make_authenticated_request(url, headers)  # Retry the request
+    except requests.exceptions.Timeout as to_err:
+        logging.warning(f"Timeout during external request after {get_http_timeout()}s: {to_err}")
+        raise
     except Exception as e:
         logging.error(f"Error during authenticated request: {e}")
         raise
@@ -364,6 +383,7 @@ def health_check():
             "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
             "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
             "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
+            "HTTP_TIMEOUT": get_http_timeout(),
             "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
             "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
             "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
@@ -408,6 +428,9 @@ def health_check():
 
         return jsonify(response)
 
+    except requests.exceptions.Timeout as e:
+        logging.error(f"External API request timed out: {e}")
+        return jsonify({"error": "Request to external API timed out"}), 504
     except Exception as e:
         logging.error(f"Error in health_check: {e}")
         return jsonify({"error": str(e)}), 500
@@ -523,6 +546,7 @@ def health_check_by_identifier(identifier):
                     "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
                     "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
                     "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+                    "HTTP_TIMEOUT": get_http_timeout(),
                     "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
                     "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
                     "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
@@ -570,6 +594,9 @@ def health_check_by_identifier(identifier):
         # If no matching hostname, ID, name, or machineName is found
         return jsonify({"error": "Device not found"}), 404
 
+    except requests.exceptions.Timeout as e:
+        logging.error(f"External API request timed out: {e}")
+        return jsonify({"error": "Request to external API timed out"}), 504
     except Exception as e:
         logging.error(f"Error in health_check_by_identifier: {e}")
         return jsonify({"error": str(e)}), 500
@@ -678,6 +705,7 @@ def health_check_unhealthy():
             "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
             "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
             "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "HTTP_TIMEOUT": get_http_timeout(),
             "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
             "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
             "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
@@ -722,6 +750,9 @@ def health_check_unhealthy():
 
         return jsonify(response)
 
+    except requests.exceptions.Timeout as e:
+        logging.error(f"External API request timed out: {e}")
+        return jsonify({"error": "Request to external API timed out"}), 504
     except Exception as e:
         logging.error(f"Error in health_check_unhealthy: {e}")
         return jsonify({"error": str(e)}), 500
@@ -824,6 +855,7 @@ def health_check_healthy():
             "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
             "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
             "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "HTTP_TIMEOUT": get_http_timeout(),
             "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
             "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
             "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
@@ -868,6 +900,9 @@ def health_check_healthy():
 
         return jsonify(response)
 
+    except requests.exceptions.Timeout as e:
+        logging.error(f"External API request timed out: {e}")
+        return jsonify({"error": "Request to external API timed out"}), 504
     except Exception as e:
         logging.error(f"Error in health_check_healthy: {e}")
         return jsonify({"error": str(e)}), 500
