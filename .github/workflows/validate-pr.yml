@@ -1,0 +1,56 @@
+name: Validate PR
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint, Test, and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest
+
+      - name: Lint
+        run: flake8 healthcheck.py
+
+      - name: Test
+        run: |
+          set -e
+          pytest -q || code=$?
+          if [ -n "$code" ]; then
+            # Exit code 5 means no tests collected; treat as success
+            if [ "$code" -eq 5 ]; then
+              echo "No tests collected; skipping failures."
+              exit 0
+            else
+              exit "$code"
+            fi
+          fi
+
+      - name: Docker build (verification only)
+        run: docker build -t tailscale-healthcheck:ci .
+
