@@ -1,22 +1,21 @@
-name: Publish image (tag releases)
+name: Publish dev image (main)
 
 on:
   push:
-    tags:
-      - '*'
-  workflow_dispatch: {}
+    branches:
+      - main
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: publish-release-${{ github.ref }}
+  group: publish-dev-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  publish_release:
-    name: Build and push release images
+  publish_dev:
+    name: Build and push dev image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -41,25 +40,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            laitco/tailscale-healthcheck
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest
-            type=ref,event=tag
-          labels: |
-            org.opencontainers.image.source=${{ github.repositoryUrl }}
-            org.opencontainers.image.revision=${{ github.sha }}
-
-      - name: Build and push
+      - name: Build and push :dev
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            laitco/tailscale-healthcheck:dev
+            ghcr.io/${{ github.repository }}:dev
