@@ -70,20 +70,28 @@ jobs:
           VERSION: ${{ steps.validate.outputs.version }}
 
       - name: Ensure OpenAI key when AI enabled
-        if: ${{ inputs.ai_rewrite == 'true' && secrets.OPENAI_API_KEY == '' }}
+        if: ${{ inputs.ai_rewrite == 'true' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          echo "ai_rewrite is enabled but OPENAI_API_KEY is not set" >&2
-          exit 1
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "ai_rewrite is enabled but OPENAI_API_KEY is not set" >&2
+            exit 1
+          fi
 
       - name: Rewrite notes via OpenAI
         id: ai_openai
-        if: ${{ inputs.ai_rewrite == 'true' && secrets.OPENAI_API_KEY != '' }}
+        if: ${{ inputs.ai_rewrite == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           RAW_NOTES: ${{ steps.gen_notes.outputs.body }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY is required for AI rewrite" >&2
+            exit 1
+          fi
           # Use requested default model; allow override via OPENAI_MODEL secret/env
           MODEL="${OPENAI_MODEL:-gpt-5-mini}"
           PROMPT=$(cat << 'EOF'
