@@ -87,6 +87,22 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 
 ## 📝 Release Notes
 
+### 1.3.0
+- Add web UI dashboard and 404 handling (Resolves #21).
+- Configurable rate limiting with default file backend; docs and tests updated (Resolves #30).
+- Iterative retry logic with exponential backoff and jitter for authenticated requests; env config and tests (Resolves #29).
+- Enforce read-only proxy; restrict cache invalidation to GET; tests and docs (Resolves #32).
+- Configurable caching with shared file backend; add cache invalidate endpoint; docs and tests (Resolves #18).
+- Enforce HTTP timeouts for outbound requests (Resolves #28).
+- Pin dependencies and add Dependabot configuration (Resolves #26).
+- Run container as non-root user `appuser` (Resolves #27).
+- Upgrade to Python 3.12 in Docker and CI; refresh docs (Resolves #24).
+- Default logging to INFO; add `.env.example`, `.gitignore`; update tests (Resolves #25).
+- CI: Tag-driven release to Docker Hub and GHCR; dev publish on main (Resolves #33, #22).
+- Add `.flake8` and fix lint issues in codebase (Resolves #34).
+- Add manual GitHub Actions workflows for PR validation (Resolves #23).
+- Various workflow updates to stabilize the release pipeline.
+
 ### 1.2.6.1
 - Fixed: Support for ISO 8601 timestamps with fractional seconds from Tailscale API using `dateutil.parser`.
 - Added: `python-dateutil` to requirements for robust timestamp parsing.
