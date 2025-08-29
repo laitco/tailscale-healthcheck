@@ -2,8 +2,12 @@ import os
 import logging
 from healthcheck import initialize_oauth  # Import the OAuth initialization function
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with safe default (INFO) and env override
+def _get_log_level_from_env(default=logging.INFO):
+    level_name = os.getenv("LOG_LEVEL", "INFO")
+    return getattr(logging, str(level_name).upper(), default)
+
+logging.basicConfig(level=_get_log_level_from_env())
 
 # Increase timeout settings
 timeout = int(os.getenv("GUNICORN_TIMEOUT", 120))  # Default timeout to 120 seconds

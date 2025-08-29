@@ -10,8 +10,17 @@ from http.client import RemoteDisconnected  # Add import for better error handli
 import fnmatch  # Add for wildcard pattern matching
 from dateutil import parser  # Add this import
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+def get_log_level_from_env(default=logging.INFO):
+    """Return a logging level from LOG_LEVEL env var, defaulting to INFO.
+
+    Accepts standard level names like DEBUG, INFO, WARNING, ERROR, CRITICAL.
+    Falls back to the provided default if the value is missing or invalid.
+    """
+    level_name = os.getenv("LOG_LEVEL", "INFO")
+    return getattr(logging, str(level_name).upper(), default)
+
+# Configure logging with safe default (INFO) and env override
+logging.basicConfig(level=get_log_level_from_env())
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False  # Allow trailing slashes to be ignored
@@ -354,6 +363,7 @@ def health_check():
             "OAUTH_CLIENT_ID": OAUTH_CLIENT_ID if OAUTH_CLIENT_ID else "not configured",
             "OAUTH_CLIENT_SECRET": "********" if OAUTH_CLIENT_SECRET else "not configured",
             "AUTH_TOKEN": "********" if AUTH_TOKEN and AUTH_TOKEN != "your-default-token" else "not configured",
+            "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
             "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
             "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
             "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,

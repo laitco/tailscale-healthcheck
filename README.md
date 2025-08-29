@@ -29,6 +29,7 @@
   - [Using OAuth for Authentication](#using-oauth-for-authentication-recommended)
   - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
+  - [Logging](#logging)
 - [🐳 Running with Docker](#-running-with-docker)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
@@ -299,6 +300,7 @@ The application is configured using environment variables:
 | `AUTH_TOKEN`         | None              | The Tailscale API token (required if OAuth is not configured).             |
 | `OAUTH_CLIENT_ID`    | None              | The OAuth client ID (required if using OAuth).                             |
 | `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
+| `LOG_LEVEL`          | `INFO`            | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.    |
 | `ONLINE_THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine online health.                       |
 | `KEY_THRESHOLD_MINUTES`     | `1440`            | The threshold in minutes to determine key expiry health.                  |
 | `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
@@ -319,6 +321,12 @@ The application is configured using environment variables:
 | `EXCLUDE_IDENTIFIER_UPDATE_HEALTHY` | `""`              | Filter to exclude specific devices by identifier for update health (comma-separated, wildcards allowed)  |
 | `INCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to include only specific devices by tags for update health (comma-separated, wildcards allowed) |
 | `EXCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to exclude specific devices by tags for update health (comma-separated, wildcards allowed)  |
+
+### Logging
+
+- Default log level is `INFO` in both Flask and Gunicorn.
+- Enable debug logging explicitly by setting `LOG_LEVEL=DEBUG`.
+- Sensitive values are masked where logged; avoid enabling DEBUG in production.
 
 ### Response Metrics
 

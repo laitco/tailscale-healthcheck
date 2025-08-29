@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Editors/IDE settings
+.idea/
+.vscode/
+
+# Type checkers / linters caches
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage and reports
+.coverage
+.coverage.*
+coverage.xml
+
+# OS files
+.DS_Store
