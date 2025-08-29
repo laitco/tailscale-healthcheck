@@ -1,0 +1,4 @@
+[flake8]
+# Align linting with the existing code style
+max-line-length = 140
+extend-ignore = E302,E305,W293

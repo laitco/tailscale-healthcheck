@@ -123,7 +123,6 @@ def make_authenticated_request(url, headers):
     """
     Makes an authenticated request to the given URL and handles 401 errors by refreshing the token.
     """
-    global ACCESS_TOKEN
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 401:
@@ -448,10 +447,12 @@ def health_check_by_identifier(identifier):
         # Find the device with the matching hostname, ID, name, or machineName
         for device in devices:
             machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-            if (device["hostname"].lower() == identifier_lower or
-                device["id"].lower() == identifier_lower or
-                device["name"].lower() == identifier_lower or
-                machine_name.lower() == identifier_lower):
+            if (
+                device["hostname"].lower() == identifier_lower
+                or device["id"].lower() == identifier_lower
+                or device["name"].lower() == identifier_lower
+                or machine_name.lower() == identifier_lower
+            ):
                 last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
                 last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
                 expires = None
