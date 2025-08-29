@@ -1,10 +1,16 @@
-name: Publish image (tag releases)
+name: Publish image (releases & tags)
 
 on:
   push:
     tags:
       - '*'
-  workflow_dispatch: {}
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g., 1.2.3 or 1.2.3.4)"
+        required: true
 
 permissions:
   contents: read
@@ -21,6 +27,30 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Priority: release tag -> ref tag -> manual input (workflow_dispatch)
+          VERSION=""
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            # Optional: allow manual dispatch with env VERSION
+            VERSION="${VERSION:-}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine version (tag)." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -50,10 +80,11 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=ref,event=tag
+            type=raw,value=${{ steps.ver.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.repositoryUrl }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
