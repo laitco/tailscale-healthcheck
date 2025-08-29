@@ -1,0 +1,30 @@
+{% extends 'layout.html' %}
+{% block title %}Device • {{ device.machineName }}{% endblock %}
+{% block content %}
+  <nav class="breadcrumbs"><a href="{{ url_for('ui_dashboard') }}">Dashboard</a> / {{ device.machineName }}</nav>
+  <section class="card detail-card">
+    <div class="card-title">Device</div>
+    <div class="grid two">
+      <div><strong>Machine:</strong> {{ device.machineName }}</div>
+      <div><strong>OS:</strong> {{ device.os }}</div>
+      <div><strong>Client Version:</strong> {{ device.clientVersion or '—' }}</div>
+      <div><strong>Hostname:</strong> {{ device.hostname }}</div>
+      <div><strong>Last Seen:</strong> {{ device.lastSeen }}</div>
+      <div><strong>Tags:</strong> {{ (device.tags or [])|join(', ') }}</div>
+      <div><strong>Update:</strong>
+        <span class="badge {{ 'ok' if device.update_healthy else 'bad' }}">{{ 'OK' if device.update_healthy else 'Needed' }}</span>
+      </div>
+      <div><strong>Key:</strong>
+        <span class="badge {{ 'ok' if device.key_healthy else 'bad' }}">{{ 'Valid' if device.key_healthy else 'Expiring' }}</span>
+        {% if device.keyExpiryDisabled %}<small class="muted">(expiry disabled)</small>{% endif %}
+        {% if device.key_days_to_expire is not none %}<small class="muted">(~{{ device.key_days_to_expire }} days)</small>{% endif %}
+      </div>
+      <div><strong>Overall Health:</strong>
+        <span class="badge {{ 'ok' if device.healthy else 'bad' }}">{{ 'Healthy' if device.healthy else 'Unhealthy' }}</span>
+      </div>
+      {% if device.keyExpiryTimestamp %}
+      <div><strong>Key Expiry:</strong> {{ device.keyExpiryTimestamp }}</div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

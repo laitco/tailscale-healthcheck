@@ -1,0 +1,10 @@
+{% extends 'layout.html' %}
+{% block title %}Error{% endblock %}
+{% block content %}
+  <section class="empty">
+    <h1>Something went wrong</h1>
+    <p class="muted">{{ message }}</p>
+    <p><a class="btn" href="{{ url_for('ui_dashboard') }}">Back to Dashboard</a></p>
+  </section>
+{% endblock %}
+

@@ -570,8 +570,17 @@ docker run -d -p 5000:5000 \
 ### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
+   http://IP-ADDRESS_OR_HOSTNAME:5000/
+   ```
+   This opens the web dashboard with global metrics, search/filter controls, export (CSV/JSON), and device details. The raw JSON API remains available at:
+   ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
+
+#### Error Handling
+- Invalid routes return consistent errors:
+  - JSON API (Accept `application/json` or under `/health*`): `{ "error": "Not Found", "status": 404 }`
+  - Web UI: a clean 404 page with navigation back to the dashboard
 
 ### Run from Docker Hub
 

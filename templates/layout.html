@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Tailscale Healthcheck{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <script>
+      (function() {
+        try {
+          const stored = localStorage.getItem('theme');
+          const root = document.documentElement;
+          if (stored === 'light' || stored === 'dark') {
+            root.setAttribute('data-theme', stored);
+          } else {
+            root.setAttribute('data-theme', 'auto');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container row space-between center">
+        <a href="{{ url_for('ui_dashboard') }}" class="brand">Tailscale Healthcheck</a>
+        <nav class="nav-actions">
+          <button id="themeToggle" class="btn" aria-label="Toggle theme" title="Toggle theme">🌓</button>
+          <a class="btn" href="{{ url_for('health_check') }}" title="Raw JSON">JSON API</a>
+        </nav>
+      </div>
+    </header>
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="site-footer container">
+      <small>© Dashboard • This UI respects DISPLAY_SETTINGS_IN_OUTPUT.</small>
+    </footer>
+    <script>
+      document.getElementById('themeToggle').addEventListener('click', function() {
+        const root = document.documentElement;
+        const current = root.getAttribute('data-theme') || 'auto';
+        const next = current === 'dark' ? 'light' : (current === 'light' ? 'auto' : 'dark');
+        root.setAttribute('data-theme', next);
+        try { localStorage.setItem('theme', next); } catch (e) {}
+      });
+    </script>
+    {% block scripts %}{% endblock %}
+  </body>
+  </html>

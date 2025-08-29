@@ -1,0 +1,10 @@
+{% extends 'layout.html' %}
+{% block title %}404 • Not Found{% endblock %}
+{% block content %}
+  <section class="empty">
+    <h1>404 Not Found</h1>
+    <p class="muted">The requested resource could not be located.</p>
+    <p><a class="btn" href="{{ url_for('ui_dashboard') }}">Back to Dashboard</a></p>
+  </section>
+{% endblock %}
+

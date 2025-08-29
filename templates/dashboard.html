@@ -1,0 +1,397 @@
+{% extends 'layout.html' %}
+{% block title %}Dashboard • Tailscale Healthcheck{% endblock %}
+{% block content %}
+  <section class="cards">
+    <div class="card">
+      <div class="card-title">Overall Health</div>
+      <div class="card-metric {{ 'ok' if metrics.global_healthy else 'bad' }}">
+        {{ 'Healthy' if metrics.global_healthy else 'Issues' }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Online</div>
+      <div class="card-metric {{ 'ok' if metrics.global_online_healthy else 'bad' }}">
+        {{ metrics.counter_healthy_online_true }} / {{ metrics.counter_healthy_online_true + metrics.counter_healthy_online_false }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Key Valid</div>
+      <div class="card-metric {{ 'ok' if metrics.global_key_healthy else 'bad' }}">
+        {{ metrics.counter_key_healthy_true }} / {{ metrics.counter_key_healthy_true + metrics.counter_key_healthy_false }}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Up to Date</div>
+      <div class="card-metric {{ 'ok' if metrics.global_update_healthy else 'bad' }}">
+        {{ metrics.counter_update_healthy_true }} / {{ metrics.counter_update_healthy_true + metrics.counter_update_healthy_false }}
+      </div>
+    </div>
+    <div class="card card-meta">
+      <div class="card-title">Data Source</div>
+      <div class="card-metric">
+        {% if cache_meta and cache_meta.hit %}
+          Cache ({{ cache_meta.backend }})
+        {% else %}
+          Fresh
+        {% endif %}
+      </div>
+      <div class="muted small meta-line">
+        <span id="ttlWrap">
+          TTL <span id="ttlVal" data-ttl="{{ cache_meta.ttl_seconds if cache_meta and cache_meta.ttl_seconds is not none else '' }}">{% if cache_meta and cache_meta.ttl_seconds is not none %}~{{ cache_meta.ttl_seconds }}s{% endif %}</span> •
+        </span>
+        <span id="relTime">just now</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="toolbar row wrap gap">
+    <input id="search" class="input" placeholder="Search hostname, id, machine, tag" aria-label="Search" />
+    <select id="statusFilter" class="input" aria-label="Filter by status">
+      <option value="">All status</option>
+      <option value="healthy">Healthy</option>
+      <option value="unhealthy">Unhealthy</option>
+    </select>
+    <select id="osFilter" class="input" aria-label="Filter by OS">
+      <option value="">All OS</option>
+      {% for os in os_values %}<option value="{{ os }}">{{ os }}</option>{% endfor %}
+    </select>
+    <select id="tagFilter" class="input" aria-label="Filter by tag">
+      <option value="">All tags</option>
+      {% for t in tag_values %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <div class="spacer"></div>
+    <button id="refreshBtn" class="btn" title="Clear cache and reload">Refresh</button>
+    <button id="exportCsv" class="btn">Export CSV</button>
+    <button id="exportJson" class="btn">Export JSON</button>
+  </section>
+
+  
+
+  <section>
+    <div class="table-wrap">
+    <table class="table" id="devicesTable">
+      <thead>
+        <tr>
+          <th class="status sortable" data-sort-key="healthy" aria-sort="none">Status <span class="indicator"></span></th>
+          <th class="machine sortable" data-sort-key="machineName" aria-sort="none">Machine <span class="indicator"></span></th>
+          <th class="os sortable col-os" data-sort-key="os" aria-sort="none">OS <span class="indicator"></span></th>
+          <th class="version sortable col-version" data-sort-key="clientVersion" aria-sort="none">Version <span class="indicator"></span></th>
+          <th class="last-seen sortable" data-sort-key="lastSeen" aria-sort="none">Last Seen <span class="indicator"></span></th>
+          <th class="update sortable col-update" data-sort-key="update_healthy" aria-sort="none">Update <span class="indicator"></span></th>
+          <th class="key sortable col-key" data-sort-key="key_healthy" aria-sort="none">Key <span class="indicator"></span></th>
+          <th class="tags sortable col-tags" data-sort-key="tags" aria-sort="none">Tags <span class="indicator"></span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </section>
+
+  {% if show_settings and settings %}
+  <section class="settings card">
+    <details>
+      <summary>Settings (redacted)</summary>
+      <p class="muted">DISPLAY_SETTINGS_IN_OUTPUT is enabled. Sensitive tokens are not shown.</p>
+      <table class="table">
+        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+        <tbody>
+          {% for k, v in settings.items() %}
+          <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+  {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const data = {
+    devices: {{ devices|tojson }},
+    metrics: {{ metrics|tojson }}
+  };
+  const loadedAtISO = {{ loaded_at|tojson }};
+  const ttlStart = {{ (cache_meta.ttl_seconds if cache_meta and cache_meta.ttl_seconds is not none else none) | tojson }};
+
+  const tbody = document.querySelector('#devicesTable tbody');
+  const searchInput = document.getElementById('search');
+  const osFilter = document.getElementById('osFilter');
+  const tagFilter = document.getElementById('tagFilter');
+  const statusFilter = document.getElementById('statusFilter');
+
+  function matches(d, q) {
+    if (!q) return true;
+    const v = q.toLowerCase();
+    const tags = (d.tags || []).join(' ').toLowerCase();
+    return (
+      (d.hostname || '').toLowerCase().includes(v) ||
+      (d.id || '').toLowerCase().includes(v) ||
+      (d.device || '').toLowerCase().includes(v) ||
+      (d.machineName || '').toLowerCase().includes(v) ||
+      tags.includes(v)
+    );
+  }
+
+  function filterDevices() {
+    const q = searchInput.value.trim();
+    const osv = osFilter.value;
+    const tagv = tagFilter.value;
+    const statusv = statusFilter.value;
+    return data.devices.filter(d => {
+      if (!matches(d, q)) return false;
+      if (osv && d.os !== osv) return false;
+      if (tagv && !(d.tags || []).includes(tagv)) return false;
+      if (statusv === 'healthy' && !d.healthy) return false;
+      if (statusv === 'unhealthy' && d.healthy) return false;
+      return true;
+    });
+  }
+
+  function badge(ok, trueText, falseText) {
+    const label = ok ? trueText : falseText;
+    return `<span class="badge ${ok ? 'ok' : 'bad'}">${label}</span>`;
+  }
+
+  function relativeTime(iso) {
+    try {
+      const then = new Date(iso).getTime();
+      if (!then) return '';
+      const now = Date.now();
+      let diff = Math.max(0, Math.floor((now - then) / 1000));
+      if (diff < 60) return 'just now';
+      const m = Math.floor(diff / 60); if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+      const d = Math.floor(h / 24); return `${d}d ago`;
+    } catch (_) { return ''; }
+  }
+
+  let sortState = { key: null, dir: 'asc' };
+
+  function getSortValue(d, key) {
+    switch (key) {
+      case 'healthy':
+      case 'update_healthy':
+      case 'key_healthy':
+        return d[key] ? 1 : 0;
+      case 'lastSeen':
+        return Date.parse(d.lastSeen || 0) || 0;
+      case 'tags':
+        return (d.tags || []).join(',');
+      case 'machineName':
+      case 'os':
+        return (d[key] || '').toString().toLowerCase();
+      case 'clientVersion': {
+        const v = (d.clientVersion || '').toString();
+        const parsed = parseSemver(v);
+        if (!parsed) return v.toLowerCase();
+        // Produce a numeric rank for semantic sort
+        const rank = (parsed.major * 1e9) + (parsed.minor * 1e6) + (parsed.patch * 1e3) + (parsed.build || 0);
+        return rank;
+      }
+      default:
+        return (d[key] || '').toString().toLowerCase();
+    }
+  }
+
+  function sortDevices(items) {
+    if (!sortState.key) return items;
+    const { key, dir } = sortState;
+    const factor = dir === 'desc' ? -1 : 1;
+    return items.slice().sort((a, b) => {
+      const av = getSortValue(a, key);
+      const bv = getSortValue(b, key);
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return (av - bv) * factor;
+      }
+      return String(av).localeCompare(String(bv)) * factor;
+    });
+  }
+
+  function setHeaderIndicators() {
+    document.querySelectorAll('#devicesTable thead th.sortable').forEach(th => {
+      const key = th.dataset.sortKey;
+      if (sortState.key === key) {
+        th.setAttribute('aria-sort', sortState.dir === 'desc' ? 'descending' : 'ascending');
+      } else {
+        th.setAttribute('aria-sort', 'none');
+      }
+    });
+  }
+
+  function parseSemver(ver) {
+    if (!ver) return null;
+    const m = ver.match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return null;
+    const major = parseInt(m[1], 10);
+    const minor = parseInt(m[2], 10);
+    const patch = parseInt(m[3], 10);
+    let build = 0;
+    const mBuild = ver.match(/^\d+\.\d+\.\d+-(\d+)/);
+    if (mBuild) build = parseInt(mBuild[1], 10) || 0;
+    let rest = ver.replace(/^\d+\.\d+\.\d+(?:-\d+)?/, '').trim();
+    return { major, minor, patch, build, rest, raw: ver };
+  }
+
+  function formatVersion(ver) {
+    if (!ver) return '';
+    // Display only numeric version components: major.minor.patch[-build]
+    const m = ver.match(/(\d+)\.(\d+)\.(\d+)(?:-(\d+))?/);
+    if (!m) {
+      const digitsOnly = (ver.match(/\d+(?:\.\d+)+/) || [''])[0];
+      return `<span class="ver" title="${ver}"><span class="ver-base">${digitsOnly}</span></span>`;
+    }
+    const base = `${m[1]}.${m[2]}.${m[3]}${m[4] ? '-' + m[4] : ''}`;
+    return `<span class="ver" title="${ver}"><span class="ver-base">${base}</span></span>`;
+  }
+
+  function render() {
+    const rows = sortDevices(filterDevices()).map(d => {
+      const url = {{ url_for('ui_device_detail', identifier='__ID__')|tojson }}.replace('__ID__', encodeURIComponent(d.id));
+      return `
+        <tr class="row-link" data-href="${url}" tabindex="0">
+          <td class="status">${badge(d.healthy, 'Healthy', 'Unhealthy')}</td>
+          <td class="machine">${d.machineName}</td>
+          <td class="os">${d.os || ''}</td>
+          <td class="version">${formatVersion(d.clientVersion || '')}</td>
+          <td class="last-seen"><span class="ls" data-ts="${d.lastSeen || ''}" title="${d.lastSeen || ''}">${relativeTime(d.lastSeen) || ''}</span></td>
+          <td class="update">${badge(d.update_healthy, d.updateAvailable ? 'Update OK' : 'No Update', 'Update Needed')}</td>
+          <td class="key">${badge(d.key_healthy, d.keyExpiryDisabled ? 'No Expiry' : 'Valid', 'Expiring')}</td>
+          <td class="tags">${(d.tags || []).join(', ')}</td>
+        </tr>`;
+    }).join('');
+    tbody.innerHTML = rows || '<tr><td colspan="8" class="muted">No devices match your filters.</td></tr>';
+    setHeaderIndicators();
+    updateLastSeen();
+  }
+
+  function toCsv(items) {
+    if (!items.length) return '';
+    const cols = ['machineName','os','clientVersion','lastSeen','updateAvailable','update_healthy','keyExpiryDisabled','key_healthy','key_days_to_expire','healthy','tags'];
+    const esc = v => '"' + String(v ?? '').replaceAll('"','""') + '"';
+    const lines = [cols.join(',')];
+    for (const it of items) {
+      lines.push(cols.map(c => c === 'tags' ? esc((it[c]||[]).join('|')) : esc(it[c])).join(','));
+    }
+    return lines.join('\n');
+  }
+
+  document.getElementById('exportCsv').addEventListener('click', () => {
+    const csv = toCsv(filterDevices());
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tailscale-health.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  document.getElementById('exportJson').addEventListener('click', () => {
+    const json = JSON.stringify(filterDevices(), null, 2);
+    const blob = new Blob([json], {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tailscale-health.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    try {
+      await fetch({{ url_for('cache_invalidate')|tojson }});
+    } catch (e) {}
+    location.reload();
+  });
+
+  searchInput.addEventListener('input', render);
+  osFilter.addEventListener('change', render);
+  tagFilter.addEventListener('change', render);
+  statusFilter.addEventListener('change', render);
+  // Sorting handlers
+  document.querySelectorAll('#devicesTable thead th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sortKey;
+      if (sortState.key === key) {
+        sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortState.key = key;
+        sortState.dir = 'asc';
+      }
+      render();
+    });
+    th.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        th.click();
+      }
+    });
+  });
+  render();
+
+  // Make entire rows clickable and keyboard accessible
+  tbody.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-href]');
+    if (tr) {
+      window.location.href = tr.dataset.href;
+    }
+  });
+  tbody.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      const tr = e.target.closest('tr[data-href]');
+      if (tr) {
+        e.preventDefault();
+        window.location.href = tr.dataset.href;
+      }
+    }
+  });
+
+  // Update relative loaded time
+  function updateRelTime() {
+    const el = document.getElementById('relTime');
+    if (!el) return;
+    el.textContent = relativeTime(loadedAtISO) || '';
+  }
+  updateRelTime();
+  setInterval(updateRelTime, 15000);
+
+  // Live TTL countdown
+  let ttlRemaining = (typeof ttlStart === 'number') ? ttlStart : null;
+  const ttlEl = document.getElementById('ttlVal');
+  const ttlWrap = document.getElementById('ttlWrap');
+  let autoRefreshed = false;
+  function updateTTL() {
+    if (ttlRemaining === null || !ttlWrap) {
+      if (ttlWrap) ttlWrap.style.display = 'none';
+      return;
+    }
+    if (ttlEl) {
+      ttlEl.textContent = `~${Math.max(0, ttlRemaining)}s`;
+    }
+    if (ttlRemaining <= 0) {
+      if (!autoRefreshed) {
+        autoRefreshed = true;
+        // Invalidate cache and reload to fetch fresh data; dashboard-only behavior
+        fetch({{ url_for('cache_invalidate')|tojson }})
+          .catch(() => {})
+          .finally(() => { location.reload(); });
+      }
+      return;
+    }
+    ttlRemaining -= 1;
+  }
+  updateTTL();
+  if (ttlRemaining !== null) setInterval(updateTTL, 1000);
+
+  // Update last seen relative times periodically
+  function updateLastSeen() {
+    document.querySelectorAll('.ls').forEach(el => {
+      const iso = el.getAttribute('data-ts');
+      el.textContent = relativeTime(iso) || '';
+    });
+  }
+  setInterval(updateLastSeen, 60000);
+</script>
+{% endblock %}
