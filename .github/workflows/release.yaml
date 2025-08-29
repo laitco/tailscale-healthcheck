@@ -110,7 +110,7 @@ jobs:
             --arg model "$MODEL" \
             --arg sys "You are an expert technical writer." \
             --arg content "$CONTENT" \
-            '{model:$model, messages:[{role:"system", content:$sys},{role:"user", content:$content}], temperature:0.2}')
+            '{model:$model, messages:[{role:"system", content:$sys},{role:"user", content:$content}]}')
           # Make request and capture HTTP status + body for clear error diagnostics
           TMP_RESP=$(mktemp)
           HTTP_CODE=$(curl -sS -o "$TMP_RESP" -w "%{http_code}" https://api.openai.com/v1/chat/completions \
