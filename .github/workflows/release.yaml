@@ -72,8 +72,22 @@ jobs:
           VERSION: ${{ steps.validate.outputs.version }}
           PREV_TAG: ${{ steps.validate.outputs.prev_tag }}
 
+      - name: Create GitHub Release (PAT)
+        id: create_release_pat
+        if: ${{ secrets.GH_RELEASE_TOKEN != '' }}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        with:
+          tag_name: ${{ steps.validate.outputs.version }}
+          release_name: ${{ steps.validate.outputs.version }}
+          draft: false
+          prerelease: ${{ fromJSON(inputs.prerelease) }}
+          body: ${{ steps.gen_notes.outputs.body }}
+
       - name: Create GitHub Release
         id: create_release
+        if: ${{ secrets.GH_RELEASE_TOKEN == '' }}
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,4 +101,51 @@ jobs:
       - name: Summary
         run: |
           echo "Created release ${{ steps.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "Release URL: ${{ steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "Release URL: ${{ steps.create_release_pat.outputs.html_url || steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
+          if [ -z "${{ secrets.GH_RELEASE_TOKEN }}" ]; then
+            echo "Note: This release was created with GITHUB_TOKEN. Downstream workflows (on: release/push) may not trigger. Add a PAT secret GH_RELEASE_TOKEN to enable triggering." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Build and push images as part of this workflow
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            laitco/tailscale-healthcheck
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.validate.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.validate.outputs.version }}
+
+      - name: Build and push images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
