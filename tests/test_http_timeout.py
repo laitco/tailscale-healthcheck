@@ -87,7 +87,7 @@ def test_fetch_oauth_token_uses_timeout(monkeypatch):
 
 
 def test_health_endpoint_times_out_gracefully(monkeypatch):
-    module = _load_healthcheck_with_env({"HTTP_TIMEOUT": "1"})
+    module = _load_healthcheck_with_env({"HTTP_TIMEOUT": "1", "CACHE_ENABLED": "NO"})
 
     def raise_timeout(*_a, **_kw):
         raise requests.exceptions.Timeout("simulated timeout")
@@ -100,4 +100,3 @@ def test_health_endpoint_times_out_gracefully(monkeypatch):
     assert res.status_code == 504
     data = res.get_json()
     assert "timed out" in data.get("error", "").lower()
-

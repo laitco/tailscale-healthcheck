@@ -1,7 +1,10 @@
 import os
+import time
+import json
+import fcntl
 import requests
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, redirect
+from flask import Flask, jsonify, redirect, request
 import pytz
 import logging  # Add logging for debugging
 from threading import Timer  # For token renewal
@@ -41,6 +44,129 @@ DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 HTTP_TIMEOUT = os.getenv("HTTP_TIMEOUT", "10").strip()
+
+# Caching configuration
+CACHE_ENABLED = os.getenv("CACHE_ENABLED", "YES").upper() == "YES"
+try:
+    CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "60").strip() or 60)
+except Exception:
+    CACHE_TTL_SECONDS = 60
+CACHE_BACKEND = os.getenv("CACHE_BACKEND", "FILE").strip().upper()  # MEMORY, FILE, or REDIS
+CACHE_PREFIX = os.getenv("CACHE_PREFIX", "ts_hc").strip() or "ts_hc"
+REDIS_URL = os.getenv("REDIS_URL", os.getenv("CACHE_REDIS_URL", "")).strip()
+CACHE_FILE_PATH = os.getenv("CACHE_FILE_PATH", "/tmp/tailscale-healthcheck-cache.json").strip()
+
+_redis_client = None
+if CACHE_BACKEND == "REDIS" and REDIS_URL:
+    try:
+        import redis  # type: ignore
+
+        _redis_client = redis.from_url(REDIS_URL)
+    except Exception as e:  # pragma: no cover - optional dependency
+        logging.warning(f"Redis cache requested but unavailable: {e}. Falling back to MEMORY.")
+        _redis_client = None
+        CACHE_BACKEND = "MEMORY"
+
+# Simple in-memory cache for Tailscale API responses (per-process)
+_cache = {}
+
+def _cache_get(key: str):
+    """Return cached value if present and not expired; else None."""
+    if not CACHE_ENABLED:
+        return None
+    if CACHE_BACKEND == "FILE":
+        try:
+            with open(CACHE_FILE_PATH, "r") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+                try:
+                    obj = json.load(fh)
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            expires_at = obj.get("expires_at", 0)
+            if expires_at > time.time():
+                return obj.get("data")
+            # expired -> clear file (best-effort)
+            try:
+                os.remove(CACHE_FILE_PATH)
+            except Exception:
+                pass
+            return None
+        except FileNotFoundError:
+            return None
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"File cache read failed: {e}. Treating as miss.")
+            return None
+    elif CACHE_BACKEND == "REDIS" and _redis_client is not None:
+        try:
+            raw = _redis_client.get(f"{CACHE_PREFIX}:{key}")
+            if raw is None:
+                return None
+            return json.loads(raw)
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"Redis get failed: {e}. Treating as miss.")
+            return None
+    else:
+        entry = _cache.get(key)
+        now = time.time()
+        if entry and entry.get("expires_at", 0) > now:
+            return entry.get("data")
+        # Expired or missing
+        if key in _cache:
+            _cache.pop(key, None)
+        return None
+
+def _cache_set(key: str, data):
+    """Store value in cache with TTL, if caching enabled and TTL > 0."""
+    if not CACHE_ENABLED or CACHE_TTL_SECONDS <= 0:
+        return
+    if CACHE_BACKEND == "FILE":
+        # Write atomically via temp file + rename
+        try:
+            directory = os.path.dirname(CACHE_FILE_PATH) or "."
+            os.makedirs(directory, exist_ok=True)
+            tmp_path = f"{CACHE_FILE_PATH}.tmp"
+            obj = {"data": data, "expires_at": time.time() + CACHE_TTL_SECONDS}
+            with open(tmp_path, "w") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                json.dump(obj, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            os.replace(tmp_path, CACHE_FILE_PATH)
+            return
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"File cache write failed: {e}. Falling back to MEMORY for this write.")
+    elif CACHE_BACKEND == "REDIS" and _redis_client is not None:
+        try:
+            _redis_client.setex(
+                name=f"{CACHE_PREFIX}:{key}",
+                time=CACHE_TTL_SECONDS,
+                value=json.dumps(data),
+            )
+            return
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"Redis set failed: {e}. Falling back to MEMORY for this write.")
+    _cache[key] = {
+        "data": data,
+        "expires_at": time.time() + CACHE_TTL_SECONDS,
+    }
+
+def _cache_clear():
+    """Clear in-memory cache."""
+    if CACHE_BACKEND == "FILE":
+        try:
+            os.remove(CACHE_FILE_PATH)
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"File cache clear failed: {e}")
+    elif CACHE_BACKEND == "REDIS" and _redis_client is not None:
+        try:
+            # We only use a small, known key set; delete directly
+            _redis_client.delete(f"{CACHE_PREFIX}:devices")
+        except Exception as e:  # pragma: no cover - runtime-only
+            logging.warning(f"Redis clear failed: {e}. Falling back to MEMORY clear.")
+    _cache.clear()
 
 def get_http_timeout(default: float = 10.0) -> float:
     """Return HTTP timeout (seconds) from `HTTP_TIMEOUT` env var.
@@ -168,6 +294,28 @@ def make_authenticated_request(url, headers):
         logging.error(f"Error during authenticated request: {e}")
         raise
 
+def fetch_devices():
+    """Fetch devices from Tailscale API with optional caching.
+
+    Returns a list/dict payload from the Tailscale API `devices` endpoint.
+    Caches the full HTTP JSON response body under key "devices".
+    """
+    # Try cache first
+    cached = _cache_get("devices")
+    if cached is not None:
+        return cached.get("devices", [])
+
+    # Determine the authorization method
+    if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+        auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    else:
+        auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
+    response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
+    payload = response.json()
+    _cache_set("devices", payload)
+    return payload.get("devices", [])
+
 def should_include_device(device):
     """
     Check if a device should be included based on filter settings
@@ -274,15 +422,8 @@ def remove_tag_prefix(tags):
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
-        # Determine the authorization method
-        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
-            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        else:
-            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-
-        # Fetch data from Tailscale API using the helper function
-        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
-        devices = response.json().get("devices", [])
+        # Fetch devices (uses cache if enabled)
+        devices = fetch_devices()
 
         # Get the timezone object
         try:
@@ -443,15 +584,8 @@ def health_check_redirect():
 @app.route('/health/<identifier>', methods=['GET'])
 def health_check_by_identifier(identifier):
     try:
-        # Determine the authorization method
-        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
-            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        else:
-            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-
-        # Fetch data from Tailscale API using the helper function
-        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
-        devices = response.json().get("devices", [])
+        # Fetch devices (uses cache if enabled)
+        devices = fetch_devices()
 
         # Get the timezone object
         try:
@@ -604,15 +738,8 @@ def health_check_by_identifier(identifier):
 @app.route('/health/unhealthy', methods=['GET'])
 def health_check_unhealthy():
     try:
-        # Determine the authorization method
-        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
-            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        else:
-            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-
-        # Fetch data from Tailscale API using the helper function
-        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
-        devices = response.json().get("devices", [])
+        # Fetch devices (uses cache if enabled)
+        devices = fetch_devices()
 
         # Get the timezone object
         try:
@@ -760,15 +887,8 @@ def health_check_unhealthy():
 @app.route('/health/healthy', methods=['GET'])
 def health_check_healthy():
     try:
-        # Determine the authorization method
-        if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
-            auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        else:
-            auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-
-        # Fetch data from Tailscale API using the helper function
-        response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
-        devices = response.json().get("devices", [])
+        # Fetch devices (uses cache if enabled)
+        devices = fetch_devices()
 
         # Get the timezone object
         try:
@@ -905,6 +1025,22 @@ def health_check_healthy():
         return jsonify({"error": "Request to external API timed out"}), 504
     except Exception as e:
         logging.error(f"Error in health_check_healthy: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/health/cache/invalidate', methods=['POST', 'GET'])
+def cache_invalidate():
+    """Invalidate the in-memory cache.
+
+    Safe, no-op if caching is disabled or cache is already empty.
+    """
+    try:
+        _cache_clear()
+        return jsonify({
+            "cache_enabled": CACHE_ENABLED,
+            "message": "cache cleared"
+        })
+    except Exception as e:
+        logging.error(f"Error clearing cache: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

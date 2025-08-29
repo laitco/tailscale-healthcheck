@@ -78,6 +78,11 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Configurable via DISPLAY_SETTINGS_IN_OUTPUT
   - Secure masking of sensitive data
   - Comprehensive configuration overview
+- **Configurable Caching**:
+  - Optional in-memory cache for Tailscale API responses
+  - Tunable TTL to balance freshness vs. API usage
+  - Manual cache invalidation endpoint
+  - Optional shared cache backends: File (local) or Redis
 
 ## 📝 Release Notes
 
@@ -290,6 +295,9 @@ Returns a list of all healthy devices.
 ### `/health/unhealthy`
 Returns a list of all unhealthy devices.
 
+### `/health/cache/invalidate`
+Clears the in-memory cache. Safe to call anytime. Useful when caching is enabled and you want to force a refresh before TTL expiry.
+
 ## ⚙️ Configuration
 
 The application is configured using environment variables:
@@ -322,12 +330,32 @@ The application is configured using environment variables:
 | `EXCLUDE_IDENTIFIER_UPDATE_HEALTHY` | `""`              | Filter to exclude specific devices by identifier for update health (comma-separated, wildcards allowed)  |
 | `INCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to include only specific devices by tags for update health (comma-separated, wildcards allowed) |
 | `EXCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to exclude specific devices by tags for update health (comma-separated, wildcards allowed)  |
+| `CACHE_ENABLED`      | `YES`             | Enable in-memory caching of the Tailscale devices API response. Set to `NO` to disable. |
+| `CACHE_TTL_SECONDS`  | `60`              | Cache time-to-live in seconds. |
+| `CACHE_BACKEND`      | `FILE`            | Cache backend: `FILE` (shared on host), `MEMORY` (per-process), or `REDIS` (shared across instances). |
+| `REDIS_URL`          | `""`              | Redis connection URL when `CACHE_BACKEND=REDIS`, e.g., `redis://host:6379/0`. |
+| `CACHE_PREFIX`       | `ts_hc`           | Key prefix used for Redis cache keys. |
+| `CACHE_FILE_PATH`    | `/tmp/tailscale-healthcheck-cache.json` | File path when `CACHE_BACKEND=FILE` (default). |
 
 ### Logging
 
 - Default log level is `INFO` in both Flask and Gunicorn.
 - Enable debug logging explicitly by setting `LOG_LEVEL=DEBUG`.
 - Sensitive values are masked where logged; avoid enabling DEBUG in production.
+
+### Caching
+
+- Enabled by default with `CACHE_TTL_SECONDS=60`.
+- Disable by setting `CACHE_ENABLED=NO`.
+- The app caches the JSON from the Tailscale `devices` API and reuses it across requests for the configured TTL.
+- Invalidation: call `POST /health/cache/invalidate` (or `GET`) to clear the cache immediately.
+- Security: cached data contains only device info from the API; secrets remain masked elsewhere.
+
+#### Shared Cache Across Gunicorn Workers
+
+- By default (`CACHE_BACKEND=MEMORY`), each Gunicorn worker has its own in-memory cache.
+- File-based shared cache on a single host: set `CACHE_BACKEND=FILE` and optionally `CACHE_FILE_PATH` to a writable path (e.g., `/tmp/tailscale-healthcheck-cache.json`). The app performs atomic writes and uses file locking for safe concurrent access.
+- Distributed shared cache across instances: set `CACHE_BACKEND=REDIS` and provide `REDIS_URL`.
 
 ### Response Metrics
 
