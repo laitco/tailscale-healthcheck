@@ -4,6 +4,10 @@ FROM python:3.12-slim
 # Set the working directory in the container
 WORKDIR /app
 
+# Create a dedicated non-root user and group for running the app
+# Use a fixed UID/GID for easier permission management in runtimes
+RUN groupadd -r app && useradd -r -g app -u 10001 appuser
+
 # Copy the current directory contents into the container
 COPY . /app
 
@@ -11,7 +15,12 @@ COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install curl for health checks
-RUN apt-get update && apt-get install -y curl && apt-get clean
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure application files are owned by the non-root user
+RUN chown -R appuser:app /app
 
 # Expose the port the app runs on
 EXPOSE 5000
@@ -50,5 +59,8 @@ ENV FLASK_APP=healthcheck.py
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Replace CMD with ENTRYPOINT to allow passing arguments like --help
+# Switch to the non-root user for running the application
+USER appuser
+
+# Use ENTRYPOINT to allow passing arguments like --help
 ENTRYPOINT ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "-c", "gunicorn_config.py", "healthcheck:app"]

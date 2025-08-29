@@ -438,6 +438,8 @@ EXCLUDE_TAG_UPDATE_HEALTHY="test*,dev*"
 
 ## 🐳 Running with Docker
 
+Note: The container runs as a non-root user (`appuser`, UID 10001) following least-privilege best practices. It binds to the non-privileged port `5000`. If you need to expose a different external port, use Docker's port mapping (e.g., `-p 8080:5000`).
+
 ### Build and Run Locally
 
 ### 1. **Build the Docker Image**:
