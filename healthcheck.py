@@ -3,6 +3,7 @@ import time
 import json
 import fcntl
 import requests
+import random
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, redirect, request
 import pytz
@@ -44,6 +45,28 @@ DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
 HTTP_TIMEOUT = os.getenv("HTTP_TIMEOUT", "10").strip()
+
+# Retry/backoff configuration
+def _get_int_env(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name, str(default)).strip()
+        val = int(raw) if raw != "" else int(default)
+        return val if val >= 0 else int(default)
+    except Exception:
+        return int(default)
+
+def _get_float_env(name: str, default: float) -> float:
+    try:
+        raw = os.getenv(name, str(default)).strip()
+        val = float(raw) if raw != "" else float(default)
+        return val if val >= 0 else float(default)
+    except Exception:
+        return float(default)
+
+MAX_RETRIES = _get_int_env("MAX_RETRIES", 3)
+BACKOFF_BASE_SECONDS = _get_float_env("BACKOFF_BASE_SECONDS", 0.5)
+BACKOFF_MAX_SECONDS = _get_float_env("BACKOFF_MAX_SECONDS", 8.0)
+BACKOFF_JITTER_SECONDS = _get_float_env("BACKOFF_JITTER_SECONDS", 0.1)
 
 # HTTP method restrictions (read-only proxy, not user-configurable)
 ALLOWED_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -301,27 +324,62 @@ def enforce_read_only_methods():
 
 def make_authenticated_request(url, headers):
     """
-    Makes an authenticated request to the given URL and handles 401 errors by refreshing the token.
+    Make an authenticated GET request with bounded, iterative retries.
+
+    - Retries only on transient connection errors (e.g., RemoteDisconnected, ProtocolError).
+    - On 401, fetches a new OAuth token and retries once immediately within the same attempt.
+    - Uses exponential backoff with jitter between attempts.
+    - Honours `HTTP_TIMEOUT` for each request attempt.
+    - Bounds attempts by `MAX_RETRIES` (total attempts, not additional retries).
     """
-    try:
-        response = requests.get(url, headers=headers, timeout=get_http_timeout())
-        if response.status_code == 401:
-            logging.error("Unauthorized error (401). Attempting to refresh OAuth token...")
-            fetch_oauth_token()  # Immediately refresh the token
-            if ACCESS_TOKEN:  # Retry the request with the new token
-                headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
-                response = requests.get(url, headers=headers, timeout=get_http_timeout())
-        response.raise_for_status()
-        return response
-    except (RemoteDisconnected, ProtocolError) as e:
-        logging.error(f"Connection error during authenticated request: {e}. Retrying...")
-        return make_authenticated_request(url, headers)  # Retry the request
-    except requests.exceptions.Timeout as to_err:
-        logging.warning(f"Timeout during external request after {get_http_timeout()}s: {to_err}")
-        raise
-    except Exception as e:
-        logging.error(f"Error during authenticated request: {e}")
-        raise
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.get(url, headers=headers, timeout=get_http_timeout())
+            if response.status_code == 401:
+                logging.error("Unauthorized error (401). Attempting to refresh OAuth token...")
+                fetch_oauth_token()
+                if ACCESS_TOKEN:
+                    headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
+                    response = requests.get(url, headers=headers, timeout=get_http_timeout())
+            response.raise_for_status()
+            return response
+        except (RemoteDisconnected, ProtocolError) as e:
+            last_err = e
+            if attempt >= MAX_RETRIES:
+                break
+            # Compute backoff with jitter and sleep
+            delay = min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), BACKOFF_MAX_SECONDS)
+            jitter = random.uniform(0, BACKOFF_JITTER_SECONDS) if BACKOFF_JITTER_SECONDS > 0 else 0.0
+            sleep_for = max(0.0, delay + jitter)
+            logging.error(
+                "Connection error during authenticated request. Will retry.",
+                extra={
+                    "event": "auth_request_retry",
+                    "attempt": attempt,
+                    "max_retries": MAX_RETRIES,
+                    "error": str(e),
+                    "sleep_seconds": round(sleep_for, 3),
+                },
+            )
+            time.sleep(sleep_for)
+        except requests.exceptions.Timeout as to_err:
+            logging.warning(f"Timeout during external request after {get_http_timeout()}s: {to_err}")
+            raise
+        except Exception as e:
+            logging.error(f"Error during authenticated request: {e}")
+            raise
+
+    # Exhausted retries
+    logging.error(
+        "Max retries exceeded for authenticated request.",
+        extra={
+            "event": "auth_request_max_retries_exceeded",
+            "max_retries": MAX_RETRIES,
+            "error": str(last_err) if last_err else "unknown",
+        },
+    )
+    raise RuntimeError("Max retries exceeded for authenticated request")
 
 def fetch_devices():
     """Fetch devices from Tailscale API with optional caching.

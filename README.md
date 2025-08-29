@@ -310,6 +310,10 @@ The application is configured using environment variables:
 | `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
 | `LOG_LEVEL`          | `INFO`            | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.    |
 | `HTTP_TIMEOUT`       | `10`              | Timeout in seconds applied to all outbound HTTP requests.                  |
+| `MAX_RETRIES`        | `3`               | Maximum total attempts for outbound authenticated requests (bounded).      |
+| `BACKOFF_BASE_SECONDS` | `0.5`           | Initial backoff delay in seconds between retry attempts.                   |
+| `BACKOFF_MAX_SECONDS`  | `8.0`           | Maximum backoff delay cap in seconds.                                      |
+| `BACKOFF_JITTER_SECONDS` | `0.1`        | Random jitter (0..value) added to each backoff delay.                      |
 | `ONLINE_THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine online health.                       |
 | `KEY_THRESHOLD_MINUTES`     | `1440`            | The threshold in minutes to determine key expiry health.                  |
 | `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
