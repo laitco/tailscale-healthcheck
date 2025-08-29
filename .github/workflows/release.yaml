@@ -72,40 +72,6 @@ jobs:
           VERSION: ${{ steps.validate.outputs.version }}
           PREV_TAG: ${{ steps.validate.outputs.prev_tag }}
 
-      - name: Create GitHub Release (PAT)
-        id: create_release_pat
-        if: ${{ secrets.GH_RELEASE_TOKEN != '' }}
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
-        with:
-          tag_name: ${{ steps.validate.outputs.version }}
-          release_name: ${{ steps.validate.outputs.version }}
-          draft: false
-          prerelease: ${{ fromJSON(inputs.prerelease) }}
-          body: ${{ steps.gen_notes.outputs.body }}
-
-      - name: Create GitHub Release
-        id: create_release
-        if: ${{ secrets.GH_RELEASE_TOKEN == '' }}
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.validate.outputs.version }}
-          release_name: ${{ steps.validate.outputs.version }}
-          draft: false
-          prerelease: ${{ fromJSON(inputs.prerelease) }}
-          body: ${{ steps.gen_notes.outputs.body }}
-
-      - name: Summary
-        run: |
-          echo "Created release ${{ steps.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "Release URL: ${{ steps.create_release_pat.outputs.html_url || steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
-          if [ -z "${{ secrets.GH_RELEASE_TOKEN }}" ]; then
-            echo "Note: This release was created with GITHUB_TOKEN. Downstream workflows (on: release/push) may not trigger. Add a PAT secret GH_RELEASE_TOKEN to enable triggering." >> $GITHUB_STEP_SUMMARY
-          fi
-
       # Build and push images as part of this workflow
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -149,3 +115,20 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.validate.outputs.version }}
+          release_name: ${{ steps.validate.outputs.version }}
+          draft: false
+          prerelease: ${{ fromJSON(inputs.prerelease) }}
+          body: ${{ steps.gen_notes.outputs.body }}
+
+      - name: Summary
+        run: |
+          echo "Created release ${{ steps.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Release URL: ${{ steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
