@@ -103,6 +103,11 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - Add manual GitHub Actions workflows for PR validation (Resolves #23).
 - Various workflow updates to stabilize the release pipeline.
 
+### 1.3.1
+- Fixed parsing failures after Tailscale Devices API changes by tolerating missing `lastSeen` when `connectedToControl` is true (Resolves #35).
+- Added `connectedToControl` flag to all health responses and synthesized “now” timestamps for currently connected devices so UI tables remain populated (Resolves #35).
+- Added regression tests covering the new control-server flag and updated fixtures to match the latest API schema.
+
 ### 1.2.6.1
 - Fixed: Support for ISO 8601 timestamps with fractional seconds from Tailscale API using `dateutil.parser`.
 - Added: `python-dateutil` to requirements for robust timestamp parsing.

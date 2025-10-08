@@ -1,47 +1,19 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `healthcheck.py`: Flask app with `/health*` endpoints and Tailscale API integration.
-- `gunicorn_config.py`: Startup hooks, timeouts, OAuth init in master process.
-- `Dockerfile`: Production image (Python 3.12, Gunicorn) with healthcheck.
-- `.github/workflows/`: CI to build and publish Docker images.
-- `requirements.txt`: Runtime deps (`flask`, `requests`, `pytz`, `gunicorn`, `python-dateutil`).
-- `README.md`: Usage, config, and Docker instructions.
-- Tests: create under `tests/` (e.g., `tests/test_healthcheck.py`).
+The Flask app lives in `healthcheck.py`, exposing `/health` endpoints and talking to the Tailscale API. Gunicorn startup hooks and OAuth wiring reside in `gunicorn_config.py`. Container packaging is defined in `Dockerfile`, while runtime dependencies are pinned in `requirements.txt`. Continuous builds run via `.github/workflows/`. Add unit tests under `tests/` (for example `tests/test_healthcheck.py`) and keep new helpers in dedicated modules named with `lower_snake_case.py`.
 
 ## Build, Test, and Development Commands
-- Create env and install deps:
-  - `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
-- Run locally (Gunicorn):
-  - `gunicorn -w 4 -b 0.0.0.0:5000 -c gunicorn_config.py healthcheck:app`
-- Run locally (Flask dev):
-  - `FLASK_APP=healthcheck.py flask run --port 5000`
-- Lint:
-  - `pip install flake8 && flake8 healthcheck.py`
-- Test (pytest):
-  - `pip install pytest && pytest -q`
-- Docker build/run:
-  - `docker build -t tailscale-healthcheck .`
-  - `docker run -p 5000:5000 --env-file .env tailscale-healthcheck`
+Create a virtual environment and install runtime deps with `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`. Run the production stack locally via `gunicorn -w 4 -b 0.0.0.0:5000 -c gunicorn_config.py healthcheck:app`. For quick iteration use `FLASK_APP=healthcheck.py flask run --port 5000`. Lint the main module with `pip install flake8 && flake8 healthcheck.py`. Execute the test suite using `pip install pytest && pytest -q`. Build and run the Docker image with `docker build -t tailscale-healthcheck .` followed by `docker run -p 5000:5000 --env-file .env tailscale-healthcheck`.
 
 ## Coding Style & Naming Conventions
-- Python 3.12, 4-space indentation, UTF-8.
-- Names: `snake_case` functions/variables, `PascalCase` classes, modules in `lower_snake_case.py`.
-- Keep routes idempotent and JSON-only; avoid trailing-slash redirects (already handled).
-- Prefer small pure helpers (e.g., `should_include_device`) with clear docstrings.
+Target Python 3.12 with four-space indentation and UTF-8 files. Keep functions and variables in `snake_case`, classes in `PascalCase`, and modules in lowercase snake case. Routes should remain idempotent and return JSON only; avoid adding manual trailing-slash redirects. Add docstrings to pure helpers such as `should_include_device` when introducing new behavior, and prefer small, testable functions.
 
 ## Testing Guidelines
-- Framework: `pytest`. Place files under `tests/` named `test_*.py`.
-- Focus: unit-test helpers (`should_include_device`, `should_force_update_healthy`) and response shaping for `/health*` with mocked HTTP.
-- Mocking: patch `requests.get/post` and time using `unittest.mock`.
-- Run locally with `pytest -q`; add fixtures for env vars.
+Use `pytest` with files named `tests/test_*.py`. Mock network calls with `unittest.mock.patch`, especially `requests.get` and `requests.post`, and control time-dependent logic by patching timezone utilities. Ensure new helpers and any `/health*` response transformations have dedicated unit coverage. Run `pytest -q` before submitting changes and document meaningful gaps.
 
 ## Commit & Pull Request Guidelines
-- Commits: short imperative subject; link issues (e.g., “Resolves #19”).
-- PRs: clear description, linked issues, sample requests/responses, and notes on config/env changes.
-- Requirements: lint passes, tests added/updated, README or docs updated when behavior/config changes.
+Write commits with short imperative subjects (e.g., “Add device filter helper”) and link issues using “Resolves #<id>” when applicable. Pull requests should summarize behavior changes, include sample `/health` responses when relevant, and mention config or env var updates. Confirm lint and tests pass locally and update documentation when APIs or configuration knobs change.
 
 ## Security & Configuration Tips
-- Prefer OAuth (`OAUTH_CLIENT_ID/SECRET`) over `AUTH_TOKEN`. Never hardcode secrets.
-- Use `.env` for local dev only; do not commit real credentials.
-- Keep sensitive values masked in logs/output (already supported by the app).
+Prefer OAuth credentials (`OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`) instead of static `AUTH_TOKEN`. Store secrets in `.env` for local development only, never commit real credentials, and rely on existing logging to keep sensitive values masked.
