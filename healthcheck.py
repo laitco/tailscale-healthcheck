@@ -688,8 +688,7 @@ def _compute_health_summary(devices):
     for device in devices:
         if not should_include_device(device):
             continue
-        last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
-        last_seen_local = last_seen.astimezone(tz)
+        last_seen_local = _parse_last_seen_local(device, tz)
         expires = None
         key_healthy = True if device.get("keyExpiryDisabled", False) else True
         key_days_to_expire = None
@@ -700,7 +699,7 @@ def _compute_health_summary(devices):
             key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
             key_days_to_expire = time_until_expiry.days
 
-        online_is_healthy = last_seen_local >= threshold_time
+        online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
         update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
         key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
         is_healthy = online_is_healthy and key_healthy
@@ -734,7 +733,8 @@ def _compute_health_summary(devices):
             "clientVersion": device.get("clientVersion", ""),
             "updateAvailable": device.get("updateAvailable", False),
             "update_healthy": update_is_healthy,
-            "lastSeen": last_seen_local.isoformat(),
+            "connectedToControl": device.get("connectedToControl"),
+            "lastSeen": last_seen_local.isoformat() if last_seen_local else None,
             "online_healthy": online_is_healthy,
             "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
             "key_healthy": key_healthy,
@@ -1009,6 +1009,33 @@ def remove_tag_prefix(tags):
         return []
     return [tag.replace('tag:', '') for tag in tags]
 
+def _parse_last_seen_local(device, tz):
+    """Return the device lastSeen timestamp converted to the provided timezone."""
+    last_seen_raw = device.get("lastSeen")
+    if not last_seen_raw and device.get("connectedToControl") is True:
+        return datetime.now(tz)
+    if not last_seen_raw:
+        return None
+    try:
+        parsed = parser.isoparse(last_seen_raw)
+    except (ValueError, TypeError) as exc:
+        logging.debug(f"Unable to parse lastSeen for {device.get('name', '<unknown>')}: {exc}")
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=pytz.UTC)
+    else:
+        parsed = parsed.astimezone(pytz.UTC)
+    return parsed.astimezone(tz)
+
+def _determine_online_status(device, last_seen_local, threshold_time):
+    """Compute online health using connectedToControl when available."""
+    connected_flag = device.get("connectedToControl")
+    if connected_flag is True:
+        return True
+    if last_seen_local is None:
+        return False
+    return last_seen_local >= threshold_time
+
 @app.route('/health', methods=['GET'])
 @_apply_limits
 def health_check():
@@ -1016,119 +1043,18 @@ def health_check():
         # Fetch devices (uses cache if enabled)
         devices = fetch_devices()
 
-        # Get the timezone object
         try:
-            tz = pytz.timezone(TIMEZONE)
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone: {TIMEZONE}")
-            return jsonify({"error": f"Unknown timezone: {TIMEZONE}"}), 400
+            health_status, metrics = _compute_health_summary(devices)
+        except ValueError as exc:
+            logging.error(str(exc))
+            return jsonify({"error": str(exc)}), 400
 
-        # Calculate the threshold time (now - ONLINE_THRESHOLD_MINUTES) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=ONLINE_THRESHOLD_MINUTES)
-        logging.debug(f"Threshold time: {threshold_time.isoformat()}")
-
-        # Check health status for each device
-        health_status = []
-        counter_healthy_true = 0
-        counter_healthy_false = 0
-        counter_healthy_online_true = 0
-        counter_healthy_online_false = 0
-        counter_key_healthy_true = 0
-        counter_key_healthy_false = 0
-        counter_update_healthy_true = 0
-        counter_update_healthy_false = 0
-
-        for device in devices:
-            # Apply filters
-            if not should_include_device(device):
-                continue
-
-            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
-            last_seen_local = last_seen.astimezone(tz)
-            expires = None
-            key_healthy = True if device.get("keyExpiryDisabled", False) else True
-            key_days_to_expire = None
-            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
-                expires = expires.astimezone(tz)
-                time_until_expiry = expires - datetime.now(tz)
-                key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
-                key_days_to_expire = time_until_expiry.days
-
-            online_is_healthy = last_seen_local >= threshold_time
-            update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
-            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-            is_healthy = online_is_healthy and key_healthy
-            if UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH:
-                is_healthy = is_healthy and update_is_healthy
-
-            # Update counters
-            if is_healthy:
-                counter_healthy_true += 1
-            else:
-                counter_healthy_false += 1
-
-            if online_is_healthy:
-                counter_healthy_online_true += 1
-            else:
-                counter_healthy_online_false += 1
-
-            if key_healthy:
-                counter_key_healthy_true += 1
-            else:
-                counter_key_healthy_false += 1
-
-            # Update update healthy counters
-            if not device.get("updateAvailable", False):
-                counter_update_healthy_true += 1
-            else:
-                counter_update_healthy_false += 1
-
-            machine_name = device["name"].split('.')[0]
-            health_info = {
-                "id": device["id"],
-                "device": device["name"],
-                "machineName": machine_name,
-                "hostname": device["hostname"],
-                "os": device["os"],
-                "clientVersion": device.get("clientVersion", ""),
-                "updateAvailable": device.get("updateAvailable", False),
-                "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
-                "lastSeen": last_seen_local.isoformat(),
-                "online_healthy": online_is_healthy,
-                "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
-                "key_healthy": key_healthy,
-                "key_days_to_expire": key_days_to_expire,
-                "healthy": is_healthy,
-                "tags": remove_tag_prefix(device.get("tags", []))
-            }
-            
-            if not device.get("keyExpiryDisabled", False):
-                health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-            
-            health_status.append(health_info)
-
-        # Add counters and global health metrics to response
         settings = _build_settings_dict()
-
         response = {
             "devices": health_status,
-            "metrics": {
-                "counter_healthy_true": counter_healthy_true,
-                "counter_healthy_false": counter_healthy_false,
-                "counter_healthy_online_true": counter_healthy_online_true,
-                "counter_healthy_online_false": counter_healthy_online_false,
-                "counter_key_healthy_true": counter_key_healthy_true,
-                "counter_key_healthy_false": counter_key_healthy_false,
-                "counter_update_healthy_true": counter_update_healthy_true,
-                "counter_update_healthy_false": counter_update_healthy_false,
-                "global_healthy": counter_healthy_false <= GLOBAL_HEALTHY_THRESHOLD,
-                "global_key_healthy": counter_key_healthy_false <= GLOBAL_KEY_HEALTHY_THRESHOLD,
-                "global_online_healthy": counter_healthy_online_false <= GLOBAL_ONLINE_HEALTHY_THRESHOLD,
-                "global_update_healthy": counter_update_healthy_false <= GLOBAL_UPDATE_HEALTHY_THRESHOLD
-            }
+            "metrics": metrics,
         }
-        
+
         if DISPLAY_SETTINGS_IN_OUTPUT:
             response["settings"] = settings
 
@@ -1187,8 +1113,7 @@ def health_check_by_identifier(identifier):
                 or device["name"].lower() == identifier_lower
                 or machine_name.lower() == identifier_lower
             ):
-                last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
-                last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+                last_seen_local = _parse_last_seen_local(device, tz)
                 expires = None
                 key_healthy = True if device.get("keyExpiryDisabled", False) else True
                 key_days_to_expire = None
@@ -1199,8 +1124,14 @@ def health_check_by_identifier(identifier):
                     key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
                     key_days_to_expire = time_until_expiry.days
 
-                logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-                online_is_healthy = last_seen_local >= threshold_time
+                if last_seen_local:
+                    logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
+                elif device.get("connectedToControl") is True:
+                    logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
+                else:
+                    logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
+
+                online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
                 update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
                 key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
                 is_healthy = online_is_healthy and key_healthy
@@ -1229,8 +1160,9 @@ def health_check_by_identifier(identifier):
                     "os": device["os"],
                     "clientVersion": device.get("clientVersion", ""),
                     "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
-                    "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
+                    "update_healthy": update_is_healthy,
+                    "connectedToControl": device.get("connectedToControl"),
+                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
@@ -1308,8 +1240,7 @@ def health_check_unhealthy():
         # Check health status for each device and filter unhealthy devices
         unhealthy_devices = []
         for device in devices:
-            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
-            last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+            last_seen_local = _parse_last_seen_local(device, tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
             key_days_to_expire = None
@@ -1320,8 +1251,14 @@ def health_check_unhealthy():
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
                 key_days_to_expire = time_until_expiry.days
 
-            logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            online_is_healthy = last_seen_local >= threshold_time
+            if last_seen_local:
+                logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
+            elif device.get("connectedToControl") is True:
+                logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
+            else:
+                logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
+
+            online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
             update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             is_healthy = online_is_healthy and key_healthy
@@ -1355,8 +1292,9 @@ def health_check_unhealthy():
                     "os": device["os"],
                     "clientVersion": device.get("clientVersion", ""),
                     "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
-                    "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
+                    "update_healthy": update_is_healthy,
+                    "connectedToControl": device.get("connectedToControl"),
+                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,
@@ -1433,8 +1371,7 @@ def health_check_healthy():
         # Check health status for each device and filter healthy devices
         healthy_devices = []
         for device in devices:
-            last_seen = parser.isoparse(device["lastSeen"]).replace(tzinfo=pytz.UTC)
-            last_seen_local = last_seen.astimezone(tz)  # Convert lastSeen to the specified timezone
+            last_seen_local = _parse_last_seen_local(device, tz)  # Convert lastSeen to the specified timezone
             expires = None
             key_healthy = True if device.get("keyExpiryDisabled", False) else True
             key_days_to_expire = None
@@ -1445,8 +1382,14 @@ def health_check_healthy():
                 key_healthy = time_until_expiry.total_seconds() / 60 > KEY_THRESHOLD_MINUTES
                 key_days_to_expire = time_until_expiry.days
 
-            logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            online_is_healthy = last_seen_local >= threshold_time
+            if last_seen_local:
+                logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
+            elif device.get("connectedToControl") is True:
+                logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
+            else:
+                logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
+
+            online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
             update_is_healthy = should_force_update_healthy(device) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             is_healthy = online_is_healthy and key_healthy
@@ -1474,8 +1417,9 @@ def health_check_healthy():
                     "os": device["os"],
                     "clientVersion": device.get("clientVersion", ""),
                     "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": should_force_update_healthy(device) or not device.get("updateAvailable", False),
-                    "lastSeen": last_seen_local.isoformat(),  # Include timezone offset in ISO format
+                    "update_healthy": update_is_healthy,
+                    "connectedToControl": device.get("connectedToControl"),
+                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
                     "key_healthy": key_healthy,

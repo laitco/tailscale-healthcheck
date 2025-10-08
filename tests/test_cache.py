@@ -23,16 +23,17 @@ def _load_healthcheck_with_env(env: dict) -> types.ModuleType:
 def _dummy_devices_payload():
     return {
         "devices": [
-            {
-                "id": "id-1",
-                "name": "host1.example",
-                "hostname": "host1",
-                "os": "linux",
-                "lastSeen": "2099-01-01T00:00:00Z",
-                "tags": ["tag:user"],
-                "updateAvailable": False,
-                "keyExpiryDisabled": True,
-            }
+        {
+            "id": "id-1",
+            "name": "host1.example",
+            "hostname": "host1",
+            "os": "linux",
+            "connectedToControl": False,
+            "lastSeen": "2099-01-01T00:00:00Z",
+            "tags": ["tag:user"],
+            "updateAvailable": False,
+            "keyExpiryDisabled": True,
+        }
         ]
     }
 
