@@ -1,28 +1,26 @@
-name: Create Release (manual)
+name: Release (main)
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version (e.g., 1.2.3 or 1.2.3.4)"
-        required: true
-      prerelease:
-        description: "Mark as pre-release"
-        required: false
-        default: 'false'
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
   packages: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
-  group: manual-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  prepare_and_release:
-    name: Validate, generate notes, and publish release
+  # Runs on every regular push to main. Bumps the patch version and opens/updates
+  # a "release PR" that just holds the VERSION bump. Merging that PR is the
+  # manual approval gate that actually triggers the publish_release job below.
+  prepare_release:
+    name: Prepare release PR
+    if: ${{ !contains(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -30,35 +28,84 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate version format and uniqueness
-        id: validate
+      - name: Compute next patch version
+        id: bump
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
-          # Allow 2-, 3-, or 4-part numeric versions (e.g., 1.2, 1.2.3, 1.2.3.4)
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+(\.[0-9]+)?)?$ ]]; then
-            echo "Invalid version: $VERSION. Use 2 to 4 numeric parts (e.g., 1.2, 1.2.3, or 1.2.3.4)." >&2
-            exit 1
-          fi
+          CURRENT=$(cat VERSION | tr -d '[:space:]')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "$NEXT" > VERSION
+
+      - name: Generate release notes preview
+        id: gen_notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prev = process.env.PREV_TAG;
+            const payload = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.NEXT_VERSION,
+              target_commitish: context.sha,
+            };
+            if (prev) payload.previous_tag_name = prev;
+            const notes = await github.rest.repos.generateReleaseNotes(payload);
+            core.setOutput('body', notes.data.body || '');
+          result-encoding: string
+        env:
+          PREV_TAG: ${{ steps.bump.outputs.current }}
+          NEXT_VERSION: ${{ steps.bump.outputs.next }}
+
+      - name: Open or update release PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: release/next
+          base: main
+          commit-message: "chore(release): ${{ steps.bump.outputs.next }}"
+          title: "chore(release): ${{ steps.bump.outputs.next }}"
+          body: ${{ steps.gen_notes.outputs.body }}
+          labels: release
+
+  # Runs when a release PR (created above) is merged into main, identified by
+  # its commit message. Tags the release, builds/pushes the Docker images, and
+  # publishes the GitHub Release with generated notes.
+  publish_release:
+    name: Tag, build, and publish release
+    if: ${{ contains(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version and previous tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(cat VERSION | tr -d '[:space:]')
           git fetch --tags --quiet
           if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-            echo "Tag $VERSION already exists. Choose a new version." >&2
+            echo "Tag $VERSION already exists; nothing to release." >&2
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Determine previous tag for accurate note range, if any
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Generate default release notes (GitHub)
+      - name: Generate release notes (GitHub)
         id: gen_notes
         uses: actions/github-script@v7
         with:
           script: |
             const version = process.env.VERSION;
             const prev = process.env.PREV_TAG;
-            // Ask GitHub to generate release notes text (English, includes PRs & commits)
             const payload = {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -70,10 +117,9 @@ jobs:
             core.setOutput('body', notes.data.body || '');
           result-encoding: string
         env:
-          VERSION: ${{ steps.validate.outputs.version }}
-          PREV_TAG: ${{ steps.validate.outputs.prev_tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PREV_TAG: ${{ steps.version.outputs.prev_tag }}
 
-      # Build and push images as part of this workflow
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -102,11 +148,11 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.validate.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.repositoryUrl }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.validate.outputs.version }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       - name: Build and push images
         uses: docker/build-push-action@v6
@@ -117,19 +163,24 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Create git tag
+        run: |
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ steps.validate.outputs.version }}
-          release_name: ${{ steps.validate.outputs.version }}
+          tag_name: ${{ steps.version.outputs.version }}
+          release_name: ${{ steps.version.outputs.version }}
           draft: false
-          prerelease: ${{ fromJSON(inputs.prerelease) }}
+          prerelease: false
           body: ${{ steps.gen_notes.outputs.body }}
 
       - name: Summary
         run: |
-          echo "Created release ${{ steps.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Created release ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "Release URL: ${{ steps.create_release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY
