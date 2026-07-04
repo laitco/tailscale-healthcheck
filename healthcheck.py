@@ -42,15 +42,22 @@ app.url_map.strict_slashes = False  # Allow trailing slashes to be ignored
 # Load configuration from environment variables
 TAILNET_DOMAIN = os.getenv("TAILNET_DOMAIN", "example.com")  # Default to "example.com"
 TAILSCALE_API_URL = f"https://api.tailscale.com/api/v2/tailnet/{TAILNET_DOMAIN}/devices"
+TAILSCALE_KEYS_API_URL = f"https://api.tailscale.com/api/v2/tailnet/{TAILNET_DOMAIN}/keys?all=true"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your-default-token")
 ONLINE_THRESHOLD_MINUTES = int(os.getenv("ONLINE_THRESHOLD_MINUTES", 5))  # Default to 5 minutes
 KEY_THRESHOLD_MINUTES = int(os.getenv("KEY_THRESHOLD_MINUTES", 1440))  # Default to 1440 minutes
+# Warning/unhealthy threshold (in days) for tailnet API/auth key expiry
+KEY_EXPIRY_WARNING_DAYS = int(os.getenv("KEY_EXPIRY_WARNING_DAYS", 30))
 GLOBAL_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_HEALTHY_THRESHOLD", 100))
 GLOBAL_ONLINE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_ONLINE_HEALTHY_THRESHOLD", 100))
 GLOBAL_KEY_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_KEY_HEALTHY_THRESHOLD", 100))
 GLOBAL_UPDATE_HEALTHY_THRESHOLD = int(os.getenv("GLOBAL_UPDATE_HEALTHY_THRESHOLD", 100))
 UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH = os.getenv("UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH", "NO").upper() == "YES"
 DISPLAY_SETTINGS_IN_OUTPUT = os.getenv("DISPLAY_SETTINGS_IN_OUTPUT", "NO").upper() == "YES"
+
+def _is_tailnet_configured() -> bool:
+    """Return True if TAILNET_DOMAIN has been set to a real tailnet name."""
+    return bool(TAILNET_DOMAIN) and TAILNET_DOMAIN.strip().lower() != "example.com"
 
 PORT = int(os.getenv("PORT", 5000))  # Default to port 5000
 TIMEZONE = os.getenv("TIMEZONE", "UTC")  # Default to UTC
@@ -223,13 +230,26 @@ if CACHE_BACKEND == "REDIS" and REDIS_URL:
 # Simple in-memory cache for Tailscale API responses (per-process)
 _cache = {}
 
+# Known cache keys, used to clear/enumerate entries across backends.
+_CACHE_KEYS = ("devices", "tailnet_keys")
+
+def _cache_file_path_for(key: str) -> str:
+    """Return the file path used to persist a given cache key.
+
+    Kept backward-compatible: the original "devices" entry keeps using
+    CACHE_FILE_PATH as-is, other keys get a derived, namespaced path.
+    """
+    if key == "devices":
+        return CACHE_FILE_PATH
+    return f"{CACHE_FILE_PATH}.{key}"
+
 def _cache_get(key: str):
     """Return cached value if present and not expired; else None."""
     if not CACHE_ENABLED:
         return None
     if CACHE_BACKEND == "FILE":
         try:
-            with open(CACHE_FILE_PATH, "r") as fh:
+            with open(_cache_file_path_for(key), "r") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
                 try:
                     obj = json.load(fh)
@@ -240,7 +260,7 @@ def _cache_get(key: str):
                 return obj.get("data")
             # expired -> clear file (best-effort)
             try:
-                os.remove(CACHE_FILE_PATH)
+                os.remove(_cache_file_path_for(key))
             except Exception:
                 pass
             return None
@@ -275,9 +295,10 @@ def _cache_set(key: str, data):
     if CACHE_BACKEND == "FILE":
         # Write atomically via temp file + rename
         try:
-            directory = os.path.dirname(CACHE_FILE_PATH) or "."
+            file_path = _cache_file_path_for(key)
+            directory = os.path.dirname(file_path) or "."
             os.makedirs(directory, exist_ok=True)
-            tmp_path = f"{CACHE_FILE_PATH}.tmp"
+            tmp_path = f"{file_path}.tmp"
             obj = {"data": data, "expires_at": time.time() + CACHE_TTL_SECONDS}
             with open(tmp_path, "w") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
@@ -285,7 +306,7 @@ def _cache_set(key: str, data):
                 fh.flush()
                 os.fsync(fh.fileno())
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            os.replace(tmp_path, CACHE_FILE_PATH)
+            os.replace(tmp_path, file_path)
             return
         except Exception as e:  # pragma: no cover - runtime-only
             logging.warning(f"File cache write failed: {e}. Falling back to MEMORY for this write.")
@@ -305,18 +326,18 @@ def _cache_set(key: str, data):
     }
 
 def _cache_clear():
-    """Clear in-memory cache."""
+    """Clear cached entries across all known cache keys."""
     if CACHE_BACKEND == "FILE":
-        try:
-            os.remove(CACHE_FILE_PATH)
-        except FileNotFoundError:
-            pass
-        except Exception as e:  # pragma: no cover - runtime-only
-            logging.warning(f"File cache clear failed: {e}")
+        for key in _CACHE_KEYS:
+            try:
+                os.remove(_cache_file_path_for(key))
+            except FileNotFoundError:
+                pass
+            except Exception as e:  # pragma: no cover - runtime-only
+                logging.warning(f"File cache clear failed: {e}")
     elif CACHE_BACKEND == "REDIS" and _redis_client is not None:
         try:
-            # We only use a small, known key set; delete directly
-            _redis_client.delete(f"{CACHE_PREFIX}:devices")
+            _redis_client.delete(*(f"{CACHE_PREFIX}:{key}" for key in _CACHE_KEYS))
         except Exception as e:  # pragma: no cover - runtime-only
             logging.warning(f"Redis clear failed: {e}. Falling back to MEMORY clear.")
     _cache.clear()
@@ -330,18 +351,17 @@ def _cache_backend_name():
         return "redis"
     return "memory"
 
-def _get_devices_cache_meta():
-    """Return a small metadata dict about the devices cache state.
+def _get_cache_meta(key: str = "devices"):
+    """Return a small metadata dict about a given cache entry's state.
 
     Fields: {"hit": bool, "backend": str, "expires_at": iso-or-None, "ttl_seconds": int|None}
     """
     meta = {"hit": False, "backend": _cache_backend_name(), "expires_at": None, "ttl_seconds": None, "loaded_at_iso": None}
     if not CACHE_ENABLED:
         return meta
-    key = "devices"
     if CACHE_BACKEND == "FILE":
         try:
-            with open(CACHE_FILE_PATH, "r") as fh:
+            with open(_cache_file_path_for(key), "r") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
                 try:
                     obj = json.load(fh)
@@ -583,6 +603,25 @@ def handle_404(e):
     # UI: render a clean 404 page with link to dashboard
     return render_template("404.html", error_title="Not Found", payload=payload), 404
 
+def _upstream_error_payload(e: "requests.exceptions.HTTPError"):
+    """Build a JSON error payload/status pair from an upstream Tailscale API error.
+
+    Passes through the real upstream status code (e.g. 403 when the API
+    token/OAuth client lacks the required scope or capability, 404, etc.)
+    instead of collapsing every upstream failure to a generic 500.
+    """
+    status = 502
+    message = str(e)
+    if e.response is not None:
+        status = e.response.status_code
+        try:
+            body = e.response.json()
+            if isinstance(body, dict):
+                message = body.get("message") or body.get("error") or message
+        except Exception:
+            pass
+    return {"error": message, "upstream_status": status}, status
+
 def make_authenticated_request(url, headers):
     """
     Make an authenticated GET request with bounded, iterative retries.
@@ -651,7 +690,7 @@ def fetch_devices():
     # Try cache first
     cached = _cache_get("devices")
     if cached is not None:
-        return cached.get("devices", [])
+        return cached.get("devices") or []
 
     # Determine the authorization method
     if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
@@ -662,7 +701,120 @@ def fetch_devices():
     response = make_authenticated_request(TAILSCALE_API_URL, auth_header)
     payload = response.json()
     _cache_set("devices", payload)
-    return payload.get("devices", [])
+    return payload.get("devices") or []
+
+def fetch_tailnet_keys():
+    """Fetch tailnet API/auth keys from Tailscale API with optional caching.
+
+    Returns the list payload from the Tailscale API `keys` endpoint.
+    Caches the full HTTP JSON response body under key "tailnet_keys".
+    """
+    cached = _cache_get("tailnet_keys")
+    if cached is not None:
+        return cached.get("keys") or []
+
+    if OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and ACCESS_TOKEN:
+        auth_header = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    else:
+        auth_header = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
+    response = make_authenticated_request(TAILSCALE_KEYS_API_URL, auth_header)
+    payload = response.json()
+    _cache_set("tailnet_keys", payload)
+    return payload.get("keys") or []
+
+def _infer_key_type(key: dict) -> str:
+    """Infer whether a tailnet key is an "api" or "auth" key.
+
+    Newer Tailscale API responses may include an explicit type field
+    (e.g. "keyType"); older/list responses may not, so fall back to
+    inspecting `capabilities` (auth keys grant `devices` capabilities).
+    """
+    explicit = str(key.get("keyType") or key.get("type") or "").strip().lower()
+    if explicit:
+        return explicit
+    capabilities = key.get("capabilities") or {}
+    if "devices" in capabilities:
+        return "auth"
+    return "api"
+
+def _compute_keys_summary(keys):
+    """Compute normalized tailnet key status list and aggregate metrics.
+
+    Only "api" and "auth" key types are included (e.g. oauth-client keys
+    are excluded). A key is considered unhealthy once its expiry falls at
+    or below KEY_EXPIRY_WARNING_DAYS; keys without an `expires` field are
+    treated as never expiring and therefore healthy.
+    """
+    try:
+        tz = pytz.timezone(TIMEZONE)
+    except pytz.UnknownTimeZoneError:
+        raise ValueError(f"Unknown timezone: {TIMEZONE}")
+
+    now = datetime.now(tz)
+    key_status = []
+    counter_healthy_true = 0
+    counter_healthy_false = 0
+
+    for key in keys:
+        key_type = _infer_key_type(key)
+        if key_type not in ("api", "auth"):
+            continue
+
+        expires_raw = key.get("expires")
+        key_days_to_expire = None
+        expires_iso = None
+        if expires_raw:
+            expires = parser.isoparse(expires_raw).replace(tzinfo=pytz.UTC).astimezone(tz)
+            expires_iso = expires.isoformat()
+            key_days_to_expire = (expires - now).days
+            key_healthy = key_days_to_expire > KEY_EXPIRY_WARNING_DAYS
+        else:
+            key_healthy = True
+
+        if key_healthy:
+            counter_healthy_true += 1
+        else:
+            counter_healthy_false += 1
+
+        key_status.append({
+            "id": key.get("id"),
+            "description": key.get("description", ""),
+            "keyType": key_type,
+            "created": key.get("created"),
+            "expires": expires_iso,
+            "key_days_to_expire": key_days_to_expire,
+            "key_healthy": key_healthy,
+        })
+
+    total_keys = counter_healthy_true + counter_healthy_false
+    metrics = {
+        "total_keys": total_keys,
+        "counter_key_healthy_true": counter_healthy_true,
+        "counter_key_healthy_false": counter_healthy_false,
+        "global_keys_healthy": counter_healthy_false == 0,
+        "has_keys": total_keys > 0,
+        "key_expiry_warning_days": KEY_EXPIRY_WARNING_DAYS,
+    }
+    return key_status, metrics
+
+def _get_tailnet_keys_status():
+    """Fetch and summarize tailnet keys, guarding against an unconfigured tailnet."""
+    tailnet_configured = _is_tailnet_configured()
+    if tailnet_configured:
+        keys = fetch_tailnet_keys()
+        key_status, metrics = _compute_keys_summary(keys)
+    else:
+        key_status, metrics = [], {
+            "total_keys": 0,
+            "counter_key_healthy_true": 0,
+            "counter_key_healthy_false": 0,
+            "global_keys_healthy": True,
+            "has_keys": False,
+            "key_expiry_warning_days": KEY_EXPIRY_WARNING_DAYS,
+        }
+    metrics["tailnet_configured"] = tailnet_configured
+    return key_status, metrics
 
 def _compute_health_summary(devices):
     """Compute normalized device health list and aggregate metrics.
@@ -800,6 +952,7 @@ def _build_settings_dict():
         "HTTP_TIMEOUT": get_http_timeout(),
         "ONLINE_THRESHOLD_MINUTES": ONLINE_THRESHOLD_MINUTES,
         "KEY_THRESHOLD_MINUTES": KEY_THRESHOLD_MINUTES,
+        "KEY_EXPIRY_WARNING_DAYS": KEY_EXPIRY_WARNING_DAYS,
         "GLOBAL_HEALTHY_THRESHOLD": GLOBAL_HEALTHY_THRESHOLD,
         "GLOBAL_ONLINE_HEALTHY_THRESHOLD": GLOBAL_ONLINE_HEALTHY_THRESHOLD,
         "GLOBAL_KEY_HEALTHY_THRESHOLD": GLOBAL_KEY_HEALTHY_THRESHOLD,
@@ -844,7 +997,9 @@ def ui_dashboard():
         # Fetch devices first so cache is populated for meta display
         devices = fetch_devices()
         health_list, metrics = _compute_health_summary(devices)
-        cache_meta = _get_devices_cache_meta()
+        cache_meta = _get_cache_meta("devices")
+        key_list, key_metrics = _get_tailnet_keys_status()
+        keys_cache_meta = _get_cache_meta("tailnet_keys") if key_metrics["tailnet_configured"] else None
         settings = _build_settings_dict()
         # Load time in configured timezone
         try:
@@ -868,12 +1023,19 @@ def ui_dashboard():
             cache_meta=cache_meta,
             loaded_at=loaded_at_iso,
             loaded_at_human=loaded_at_human,
+            keys=key_list,
+            key_metrics=key_metrics,
+            keys_cache_meta=keys_cache_meta,
         )
     except ValueError as ve:
         return render_template('error.html', message=str(ve)), 400
     except requests.exceptions.Timeout as e:
         logging.warning(f"Timeout rendering dashboard: {e}")
         return render_template('error.html', message="Request to external API timed out"), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error rendering dashboard: {e}")
+        payload, status = _upstream_error_payload(e)
+        return render_template('error.html', message=f"Tailscale API error ({status}): {payload['error']}"), status
     except Exception as e:
         logging.error(f"Error rendering dashboard: {e}")
         return render_template('error.html', message="Unexpected server error"), 500
@@ -902,6 +1064,10 @@ def ui_device_detail(identifier: str):
     except requests.exceptions.Timeout as e:
         logging.warning(f"Timeout rendering device detail: {e}")
         return render_template('error.html', message="Request to external API timed out"), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error rendering device detail: {e}")
+        payload, status = _upstream_error_payload(e)
+        return render_template('error.html', message=f"Tailscale API error ({status}): {payload['error']}"), status
     except Exception as e:
         logging.error(f"Error rendering device detail: {e}")
         return render_template('error.html', message="Unexpected server error"), 500
@@ -1063,8 +1229,50 @@ def health_check():
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
         return jsonify({"error": "Request to external API timed out"}), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error in health_check: {e}")
+        payload, status = _upstream_error_payload(e)
+        return jsonify(payload), status
     except Exception as e:
         logging.error(f"Error in health_check: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/keys', methods=['GET'])
+@_apply_limits
+def keys_status():
+    """Return health status for tailnet API/auth keys.
+
+    Only "api" and "auth" key types are reported; a key is unhealthy once
+    its expiry is at or below KEY_EXPIRY_WARNING_DAYS. If TAILNET_DOMAIN is
+    not configured, or the tailnet has no such keys, this returns an empty
+    list with metrics reflecting that state rather than erroring out.
+    """
+    try:
+        try:
+            key_status, metrics = _get_tailnet_keys_status()
+        except ValueError as exc:
+            logging.error(str(exc))
+            return jsonify({"error": str(exc)}), 400
+
+        response = {
+            "keys": key_status,
+            "metrics": metrics,
+        }
+
+        if DISPLAY_SETTINGS_IN_OUTPUT:
+            response["settings"] = _build_settings_dict()
+
+        return jsonify(response)
+
+    except requests.exceptions.Timeout as e:
+        logging.error(f"External API request timed out: {e}")
+        return jsonify({"error": "Request to external API timed out"}), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error in keys_status: {e}")
+        payload, status = _upstream_error_payload(e)
+        return jsonify(payload), status
+    except Exception as e:
+        logging.error(f"Error in keys_status: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health/', methods=['GET'])
@@ -1205,6 +1413,10 @@ def health_check_by_identifier(identifier):
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
         return jsonify({"error": "Request to external API timed out"}), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error in health_check_by_identifier: {e}")
+        payload, status = _upstream_error_payload(e)
+        return jsonify(payload), status
     except Exception as e:
         logging.error(f"Error in health_check_by_identifier: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1336,6 +1548,10 @@ def health_check_unhealthy():
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
         return jsonify({"error": "Request to external API timed out"}), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error in health_check_unhealthy: {e}")
+        payload, status = _upstream_error_payload(e)
+        return jsonify(payload), status
     except Exception as e:
         logging.error(f"Error in health_check_unhealthy: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1461,6 +1677,10 @@ def health_check_healthy():
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
         return jsonify({"error": "Request to external API timed out"}), 504
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Upstream Tailscale API error in health_check_healthy: {e}")
+        payload, status = _upstream_error_payload(e)
+        return jsonify(payload), status
     except Exception as e:
         logging.error(f"Error in health_check_healthy: {e}")
         return jsonify({"error": str(e)}), 500
