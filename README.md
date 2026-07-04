@@ -204,7 +204,7 @@ If `TAILNET_DOMAIN` is left at its default (`example.com`), or the tailnet simpl
 
 **Required permissions**: the credential you configure (`AUTH_TOKEN` or OAuth client) needs read access to *Keys* in addition to *Devices*, or this endpoint returns a `403`:
 - Personal API access token: when creating it at [Settings → Keys](https://login.tailscale.com/admin/settings/keys), grant it the **Keys** capability (read access is enough).
-- OAuth client: when creating it at [Settings → OAuth clients](https://login.tailscale.com/admin/settings/oauth), add the **`keys`** scope alongside `devices`.
+- OAuth client: when creating it at [Settings → OAuth clients](https://login.tailscale.com/admin/settings/oauth), in addition to `devices:core` read, grant `read` on **API Access Tokens** and `read` on **Auth Keys**.
 
 **Example Response**:
 ```json
@@ -384,7 +384,7 @@ To use OAuth, you need to create a Tailscale OAuth client with the required perm
 
 2. Click **Create OAuth Client** and configure the following:
    - **Name**: Provide a descriptive name for the client (e.g., `Tailscale Healthcheck`).
-   - **Permissions**: Grant `read` permissions on `devices:core`.
+   - **Permissions**: Grant `read` permissions on `devices:core`. If you also want [tailnet key expiry monitoring](#keys) (`/keys`), additionally grant `read` on **API Access Tokens** and `read` on **Auth Keys**.
 
 3. Copy the generated **Client ID** and **Client Secret**.
 
@@ -399,7 +399,7 @@ To use this application with an API token, you need to generate a Tailscale API 
 1. Visit the Tailscale Admin Console:  
    [https://login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
 
-2. Click **Generate Key** and copy the generated API key.
+2. Click **Generate Key** and copy the generated API key. If you also want [tailnet key expiry monitoring](#keys) (`/keys`), grant it the **Keys** capability (read access is enough) in addition to device access.
 
 3. Set the API key as the `AUTH_TOKEN` environment variable.
 
