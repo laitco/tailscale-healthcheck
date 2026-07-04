@@ -1,8 +1,8 @@
-name: Publish dev image (main)
+name: Publish dev/beta image (dev)
 
 on:
   workflow_run:
-    workflows: ["Validate PR"]
+    workflows: ["Validate PR&Commits"]
     types: [completed]
 
 permissions:
@@ -15,15 +15,15 @@ concurrency:
 
 jobs:
   publish_dev:
-    name: Build and push dev image
-    # Run only when Validate PR succeeded on main branch
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    name: Build and push dev/beta image
+    # Run only when Validate PR&Commits succeeded on the dev branch
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'dev' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Check out the exact commit that Validate PR validated
+          # Check out the exact commit that Validate PR&Commits validated
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Set up QEMU
@@ -45,7 +45,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push :dev
+      - name: Build and push :dev and :beta
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -53,4 +53,6 @@ jobs:
           push: true
           tags: |
             laitco/tailscale-healthcheck:dev
+            laitco/tailscale-healthcheck:beta
             ghcr.io/${{ github.repository }}:dev
+            ghcr.io/${{ github.repository }}:beta
