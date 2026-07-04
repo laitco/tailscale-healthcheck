@@ -90,8 +90,10 @@
   <section class="cards">
     <div class="card">
       <div class="card-title">Tailnet Keys</div>
-      <div class="card-metric {{ 'ok' if key_metrics.global_keys_healthy else 'bad' }}">
-        {% if not key_metrics.tailnet_configured %}
+      <div class="card-metric {{ '' if (not key_metrics.tailnet_configured or key_metrics.keys_error) else ('ok' if key_metrics.global_keys_healthy else 'bad') }}">
+        {% if key_metrics.keys_error %}
+          Unavailable
+        {% elif not key_metrics.tailnet_configured %}
           Not Configured
         {% else %}
           {{ key_metrics.counter_key_healthy_true }} / {{ key_metrics.total_keys }}
@@ -115,7 +117,9 @@
           </tr>
         </thead>
         <tbody>
-          {% if not key_metrics.tailnet_configured %}
+          {% if key_metrics.keys_error %}
+          <tr><td colspan="6" class="muted">Tailnet keys are unavailable: {{ key_metrics.keys_error }}. Check that your API token/OAuth client has the <code>Keys</code> scope or capability.</td></tr>
+          {% elif not key_metrics.tailnet_configured %}
           <tr><td colspan="6" class="muted">The <code>TAILNET_DOMAIN</code> environment variable is not configured (it is still set to the default <code>example.com</code>). Set it to your tailnet name to enable key monitoring.</td></tr>
           {% elif not key_metrics.has_keys %}
           <tr><td colspan="6" class="muted">No API or auth keys were found for this tailnet.</td></tr>

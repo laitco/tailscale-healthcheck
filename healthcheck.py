@@ -816,6 +816,38 @@ def _get_tailnet_keys_status():
     metrics["tailnet_configured"] = tailnet_configured
     return key_status, metrics
 
+def _get_tailnet_keys_status_safe():
+    """Like _get_tailnet_keys_status, but never raises.
+
+    Used by the dashboard so a keys-specific problem (most commonly the
+    configured credential lacking the Keys scope/capability) degrades
+    that section to an "unavailable" state instead of taking down the
+    whole device health dashboard.
+    """
+    try:
+        return _get_tailnet_keys_status()
+    except requests.exceptions.HTTPError as e:
+        logging.warning(f"Tailnet keys unavailable (upstream error): {e}")
+        payload, _ = _upstream_error_payload(e)
+        error_message = payload["error"]
+    except requests.exceptions.Timeout as e:
+        logging.warning(f"Tailnet keys unavailable (timeout): {e}")
+        error_message = "Request to external API timed out"
+    except Exception as e:
+        logging.warning(f"Tailnet keys unavailable: {e}")
+        error_message = "Unexpected error fetching tailnet keys"
+
+    return [], {
+        "total_keys": 0,
+        "counter_key_healthy_true": 0,
+        "counter_key_healthy_false": 0,
+        "global_keys_healthy": True,
+        "has_keys": False,
+        "key_expiry_warning_days": KEY_EXPIRY_WARNING_DAYS,
+        "tailnet_configured": _is_tailnet_configured(),
+        "keys_error": error_message,
+    }
+
 def _compute_health_summary(devices):
     """Compute normalized device health list and aggregate metrics.
 
@@ -998,8 +1030,12 @@ def ui_dashboard():
         devices = fetch_devices()
         health_list, metrics = _compute_health_summary(devices)
         cache_meta = _get_cache_meta("devices")
-        key_list, key_metrics = _get_tailnet_keys_status()
-        keys_cache_meta = _get_cache_meta("tailnet_keys") if key_metrics["tailnet_configured"] else None
+        key_list, key_metrics = _get_tailnet_keys_status_safe()
+        keys_cache_meta = (
+            _get_cache_meta("tailnet_keys")
+            if key_metrics["tailnet_configured"] and not key_metrics.get("keys_error")
+            else None
+        )
         settings = _build_settings_dict()
         # Load time in configured timezone
         try:
