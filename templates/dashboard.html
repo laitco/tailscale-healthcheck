@@ -87,6 +87,55 @@
     </div>
   </section>
 
+  <section class="cards">
+    <div class="card">
+      <div class="card-title">Tailnet Keys</div>
+      <div class="card-metric {{ 'ok' if key_metrics.global_keys_healthy else 'bad' }}">
+        {% if not key_metrics.tailnet_configured %}
+          Not Configured
+        {% else %}
+          {{ key_metrics.counter_key_healthy_true }} / {{ key_metrics.total_keys }}
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tailnet API &amp; Auth Keys</h2>
+    <div class="table-wrap">
+      <table class="table" id="keysTable">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Description</th>
+            <th>Type</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Days to Expire</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if not key_metrics.tailnet_configured %}
+          <tr><td colspan="6" class="muted">The <code>TAILNET_DOMAIN</code> environment variable is not configured (it is still set to the default <code>example.com</code>). Set it to your tailnet name to enable key monitoring.</td></tr>
+          {% elif not key_metrics.has_keys %}
+          <tr><td colspan="6" class="muted">No API or auth keys were found for this tailnet.</td></tr>
+          {% else %}
+            {% for k in keys %}
+            <tr>
+              <td><span class="badge {{ 'ok' if k.key_healthy else 'bad' }}">{{ 'Healthy' if k.key_healthy else 'Expiring' }}</span></td>
+              <td>{{ k.description or k.id }}</td>
+              <td>{{ k.keyType }}</td>
+              <td>{{ k.created[:10] if k.created else '' }}</td>
+              <td>{{ k.expires[:10] if k.expires else 'Never' }}</td>
+              <td>{{ k.key_days_to_expire if k.key_days_to_expire is not none else '—' }}</td>
+            </tr>
+            {% endfor %}
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   {% if show_settings and settings %}
   <section class="settings card">
     <details>

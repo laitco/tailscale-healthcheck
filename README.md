@@ -21,6 +21,7 @@
 - [🌟 Features](#-features)
 - [📡 Endpoints](#-endpoints)
   - [`/health`](#health)
+  - [`/keys`](#keys)
   - [`/health/<identifier>`](#healthidentifier)
   - [`/health/healthy`](#healthhealthy)
   - [`/health/unhealthy`](#healthunhealthy)
@@ -196,6 +197,50 @@ Returns the health status of all devices.
 }
 ```
 
+### `/keys`
+Returns the health status of tailnet API and auth keys (from the Tailscale [`GET /tailnet/{tailnet}/keys?all=true`](https://tailscale.com/api#tag/keys/GET/tailnet/{tailnet}/keys) endpoint, listing all keys in the tailnet, not just the caller's own). Only `api` and `auth` key types are reported (`client`/OAuth-client keys are excluded). A key is `key_healthy: false` once its expiry is at or below `KEY_EXPIRY_WARNING_DAYS` days out; keys without an `expires` field never expire and are always healthy.
+
+If `TAILNET_DOMAIN` is left at its default (`example.com`), or the tailnet simply has no API/auth keys, this returns an empty `keys` list rather than an error — check `metrics.tailnet_configured` and `metrics.has_keys` to distinguish the two cases.
+
+**Required permissions**: the credential you configure (`AUTH_TOKEN` or OAuth client) needs read access to *Keys* in addition to *Devices*, or this endpoint returns a `403`:
+- Personal API access token: when creating it at [Settings → Keys](https://login.tailscale.com/admin/settings/keys), grant it the **Keys** capability (read access is enough).
+- OAuth client: when creating it at [Settings → OAuth clients](https://login.tailscale.com/admin/settings/oauth), add the **`keys`** scope alongside `devices`.
+
+**Example Response**:
+```json
+{
+  "keys": [
+    {
+      "id": "k123456CNTRL",
+      "description": "my-auth-key",
+      "keyType": "auth",
+      "created": "2025-04-01T10:00:00Z",
+      "expires": "2025-07-01T10:00:00+02:00",
+      "key_days_to_expire": 12,
+      "key_healthy": false
+    }
+  ],
+  "metrics": {
+    "total_keys": 1,
+    "counter_key_healthy_true": 0,
+    "counter_key_healthy_false": 1,
+    "global_keys_healthy": false,
+    "has_keys": true,
+    "key_expiry_warning_days": 30,
+    "tailnet_configured": true
+  }
+}
+```
+
+**Upstream errors**: if the Tailscale API itself rejects a request (e.g. `403` for a missing scope/capability, as above), the app passes through the real upstream status code and message instead of masking it as a `500`:
+```json
+{
+  "error": "requested scope is not granted for the given API access token",
+  "upstream_status": 403
+}
+```
+This passthrough applies to `/health`, `/keys`, and their variants (`/health/<identifier>`, `/health/healthy`, `/health/unhealthy`), as well as the dashboard and device detail pages (rendered as an error page with the same status code).
+
 ### `/health/<identifier>`
 Returns the health status of a specific device by hostname, ID, or name.
 
@@ -226,6 +271,7 @@ The application is configured using environment variables:
 | `BACKOFF_JITTER_SECONDS` | `0.1`        | Random jitter (0..value) added to each backoff delay.                      |
 | `ONLINE_THRESHOLD_MINUTES`  | `5`               | The threshold in minutes to determine online health.                       |
 | `KEY_THRESHOLD_MINUTES`     | `1440`            | The threshold in minutes to determine key expiry health.                  |
+| `KEY_EXPIRY_WARNING_DAYS`   | `30`              | The threshold in days at or below which a tailnet API/auth key (`/keys`) is considered unhealthy. |
 | `GLOBAL_HEALTHY_THRESHOLD`  | `100`             | The threshold for total unhealthy.                               |
 | `GLOBAL_ONLINE_HEALTHY_THRESHOLD`| `100`        | The threshold for total online health.                                       |
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
@@ -427,6 +473,7 @@ docker run -d -p 5000:5000 \
     -e AUTH_TOKEN="your-api-key" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e KEY_EXPIRY_WARNING_DAYS=30 \
     -e GLOBAL_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
@@ -455,6 +502,7 @@ docker run -d -p 5000:5000 \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e KEY_EXPIRY_WARNING_DAYS=30 \
     -e GLOBAL_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
@@ -507,6 +555,7 @@ docker run -d -p 5000:5000 \
     -e AUTH_TOKEN="your-api-key" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e KEY_EXPIRY_WARNING_DAYS=30 \
     -e GLOBAL_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
@@ -536,6 +585,7 @@ docker run -d -p 5000:5000 \
     -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
     -e ONLINE_THRESHOLD_MINUTES=5 \
     -e KEY_THRESHOLD_MINUTES=1440 \
+    -e KEY_EXPIRY_WARNING_DAYS=30 \
     -e GLOBAL_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
     -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
