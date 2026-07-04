@@ -19,7 +19,6 @@
 ## 📖 Table of Contents
 - [✨ Description](#-description)
 - [🌟 Features](#-features)
-- [📝 Release Notes](#-release-notes)
 - [📡 Endpoints](#-endpoints)
   - [`/health`](#health)
   - [`/health/<identifier>`](#healthidentifier)
@@ -45,6 +44,8 @@
 ## ✨ Description
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
+
+> Release notes have moved to the [GitHub Releases page](https://github.com/laitco/tailscale-healthcheck/releases).
 
 ## 🌟 Features
 
@@ -84,119 +85,6 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Tunable TTL to balance freshness vs. API usage
   - Manual cache invalidation endpoint
   - Optional shared cache backends: File (local) or Redis
-
-## 📝 Release Notes
-
-### 1.3.0
-- Add web UI dashboard and 404 handling (Resolves #21).
-- Configurable rate limiting with default file backend; docs and tests updated (Resolves #30).
-- Iterative retry logic with exponential backoff and jitter for authenticated requests; env config and tests (Resolves #29).
-- Enforce read-only proxy; restrict cache invalidation to GET; tests and docs (Resolves #32).
-- Configurable caching with shared file backend; add cache invalidate endpoint; docs and tests (Resolves #18).
-- Enforce HTTP timeouts for outbound requests (Resolves #28).
-- Pin dependencies and add Dependabot configuration (Resolves #26).
-- Run container as non-root user `appuser` (Resolves #27).
-- Upgrade to Python 3.12 in Docker and CI; refresh docs (Resolves #24).
-- Default logging to INFO; add `.env.example`, `.gitignore`; update tests (Resolves #25).
-- CI: Tag-driven release to Docker Hub and GHCR; dev publish on main (Resolves #33, #22).
-- Add `.flake8` and fix lint issues in codebase (Resolves #34).
-- Add manual GitHub Actions workflows for PR validation (Resolves #23).
-- Various workflow updates to stabilize the release pipeline.
-
-### 1.3.1
-- Fixed parsing failures after Tailscale Devices API changes by tolerating missing `lastSeen` when `connectedToControl` is true (Resolves #35).
-- Added `connectedToControl` flag to all health responses and synthesized “now” timestamps for currently connected devices so UI tables remain populated (Resolves #35).
-- Added regression tests covering the new control-server flag and updated fixtures to match the latest API schema.
-
-### 1.2.6.1
-- Fixed: Support for ISO 8601 timestamps with fractional seconds from Tailscale API using `dateutil.parser`.
-- Added: `python-dateutil` to requirements for robust timestamp parsing.
-
-### 1.2.6
-- Added capability to display settings:
-  - New DISPLAY_SETTINGS_IN_OUTPUT environment variable (default: NO)
-  - Optional display of all configuration settings in API output
-  - Secure masking of sensitive credentials (AUTH_TOKEN, OAUTH_CLIENT_SECRET)
-  - Default configuration values shown when settings are empty
-
-### 1.2.5
-- Added update status capabilities:
-  - Update health status with `update_healthy` field
-  - Client version tracking with `clientVersion` field
-  - Update availability status with `updateAvailable` field
-  - New global update health metric `global_update_healthy`
-  - Configurable update health threshold with `GLOBAL_UPDATE_HEALTHY_THRESHOLD`
-  - Optional inclusion of update health in overall health status via `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`
-  - Update health filtering by identifier (INCLUDE_IDENTIFIER_UPDATE_HEALTHY, EXCLUDE_IDENTIFIER_UPDATE_HEALTHY)
-  - Update health filtering by tags (INCLUDE_TAG_UPDATE_HEALTHY, EXCLUDE_TAG_UPDATE_HEALTHY)
-
-### 1.2.4
-- Added tag filtering capabilities:
-  - Tag filters (INCLUDE_TAGS, EXCLUDE_TAGS)
-  - Support for wildcard patterns in filter strings
-  - Include filters take precedence over exclude filters
-  - Multiple tag matching support per device
-
-### 1.2.3
-- Added device filtering capabilities:
-  - Operating system filters (INCLUDE_OS, EXCLUDE_OS)
-  - Device identifier filters (INCLUDE_IDENTIFIER, EXCLUDE_IDENTIFIER)
-  - Support for wildcard patterns in filter strings
-  - Include filters take precedence over exclude filters
-
-### 1.2.2
-- Added `key_days_to_expire` field showing the number of days until a device's key expires
-- Set to `null` when key expiry is disabled
-
-### 1.2.1
-- Added global health metrics with configurable thresholds
-  - GLOBAL_HEALTHY_THRESHOLD (default: 100)
-  - GLOBAL_ONLINE_HEALTHY_THRESHOLD (default: 100)
-  - GLOBAL_KEY_HEALTHY_THRESHOLD (default: 100)
-- Added detailed counter metrics for monitoring device states
-  - Healthy/unhealthy device counters
-  - Online/offline device counters
-  - Valid/expired key counters
-
-### 1.2.0
-- Added key expiry monitoring with configurable threshold (KEY_THRESHOLD_MINUTES, default: 1440)
-- Introduced combined health status based on online status and key expiry
-- Added new health indicators in API response:
-  - online_healthy: Device online status
-  - key_healthy: Key expiry status
-  - healthy: Combined status (true only if both checks pass)
-- Added keyExpiryDisabled and keyExpiryTimestamp fields in API response
-- Improved timezone handling for all timestamp fields
-
-### 1.1.3
-- Added `worker_exit` hook in Gunicorn to log worker exits and confirm restarts.
-- Enhanced error handling for `RemoteDisconnected` and `ProtocolError` in `make_authenticated_request` to retry requests instead of crashing workers.
-- Improved logging for better debugging of worker lifecycle and connection issues.
-
-### 1.1.2
-- Updated GitHub Actions workflow to include validation on publishing of Docker containers
-
-### 1.1.1
-- Improved OAuth token renewal logic to handle retries and logging for better reliability.
-- Added a global timer to automatically refresh the OAuth token every 50 minutes.
-- Enhanced error handling for unknown timezones and invalid API responses.
-- Improved logging for debugging, including token renewal times and device health checks.
-- Fixed an issue where trailing slashes in URLs caused unnecessary redirects.
-- Added logic to immediately refresh the OAuth token upon receiving a 401 Unauthorized error during API requests.
-- Introduced a helper function to handle authenticated requests with automatic token refresh.
-- Improved error handling and retry logic for token renewal failures.
-- Enhanced logging for better debugging and monitoring of token usage and renewal.
-
-### 1.1
-- Added support for Tailscale OAuth Client authentication.
-- OAuth tokens are automatically renewed every 50 minutes.
-- Improved logging to include token renewal times in the configured timezone.
-
-### 1.0
-- Initial release of the Tailscale Healthcheck application.
-- Supports health checks for all devices, specific devices, healthy devices, and unhealthy devices.
-- Includes timezone support for `lastSeen` timestamps.
-- Dockerized for easy deployment.
 
 ## 📡 Endpoints
 
