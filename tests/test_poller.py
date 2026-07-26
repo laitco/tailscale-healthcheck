@@ -111,9 +111,9 @@ def test_poll_cycle_skips_when_auth_unconfigured(tmp_path, monkeypatch):
 
     assert calls["count"] == 0
     assert dbstore.get_poll_meta() is None
-    events = {e["event_type"] for e in dbstore.list_poller_log()}
-    assert "poll_skipped" in events
-    assert "poll_started" not in events
+    # Silent skip: no API call, and no log/poller_log noise either - this
+    # would otherwise fire every POLL_INTERVAL_SECONDS forever pre-setup.
+    assert dbstore.list_poller_log() == []
 
 
 def test_is_auth_error_detects_401_403_only():

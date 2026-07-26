@@ -102,15 +102,12 @@ def run_poll_cycle():
     regardless of whether this process holds the poller election lock.
     """
     cycle_start = time.monotonic()
-    if not dbstore.is_tailnet_configured():
-        _record("poll_skipped", "Poll cycle skipped: tailnet not configured.")
-        return
-    if not dbstore.is_auth_configured():
-        # Without this, a fresh/unconfigured instance (or one where auth was
-        # only just removed) would still hit the Tailscale API every cycle
-        # with the placeholder token and get a 401 every time - noisy and
-        # pointless. Skip entirely until a usable token/OAuth pair exists.
-        _record("poll_skipped", "Poll cycle skipped: no auth token or OAuth credentials configured.")
+    if not (dbstore.is_tailnet_configured() and dbstore.is_auth_configured()):
+        # Silent, no API call and no log/poller_log noise: until setup is
+        # actually complete, this would otherwise fire (and log) every
+        # single POLL_INTERVAL_SECONDS forever on a fresh/unconfigured
+        # instance - not actionable, not interesting, just repeats the same
+        # "not configured" fact the setup wizard is already showing.
         return
 
     _record("poll_started", "Poll cycle starting.")
