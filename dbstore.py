@@ -128,7 +128,11 @@ KEY_AUDIT_FIELDS = ("description", "key_type", "capabilities", "expires")
 # plaintext - credentials and secrets. admin.py's MASKED_SETTINGS (what's
 # shown as masked in the settings UI) is derived from this same set, so
 # there's one source of truth for "this is a secret".
-SECRET_SETTINGS = {"auth_token", "oauth_client_secret", "health_endpoint_token", "secret_key"}
+SECRET_SETTINGS = {
+    "auth_token", "oauth_client_secret", "health_endpoint_token", "secret_key",
+    # Can embed backend credentials, e.g. redis://:password@host/db.
+    "rate_limit_storage_url",
+}
 _REDACTED = "[redacted]"
 
 _DEFAULT_DB_PATH = "/data/healthcheck.db"
@@ -578,6 +582,40 @@ def get_poll_meta():
     with get_connection() as conn:
         row = _db_get_setting_row(conn, "last_polled_at")
         return row["value"] if row else None
+
+
+def try_claim_manual_poll(ttl_seconds: int = 10) -> bool:
+    """Atomically claim the right to run an out-of-band poll cycle right now.
+
+    /health/cache/invalidate is public/unauthenticated, and run_poll_cycle()
+    does real outbound HTTP + DB work - without this, N concurrent public
+    callers would each synchronously run their own full cycle, tying up
+    every Gunicorn worker for the duration of the outbound calls. This is a
+    short-lived (ttl_seconds) claim stored in the settings table (shared
+    across all worker processes via SQLite) so concurrent/rapid calls
+    collapse into a single actual poll instead: only the caller that wins
+    the claim runs one, everyone else within the TTL window is told a
+    refresh is already in flight and does no outbound work at all.
+    """
+    now = time.time()
+    new_value = str(now + ttl_seconds)
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE name = 'manual_poll_claimed_until'").fetchone()
+        if row is None:
+            try:
+                conn.execute(
+                    "INSERT INTO settings (name, value, source, updated_at) VALUES ('manual_poll_claimed_until', ?, 'db', ?)",
+                    (new_value, _now_iso()),
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False  # another process/thread inserted the first claim first
+        cur = conn.execute(
+            "UPDATE settings SET value = ?, updated_at = ? "
+            "WHERE name = 'manual_poll_claimed_until' AND CAST(value AS REAL) <= ?",
+            (new_value, _now_iso(), now),
+        )
+        return cur.rowcount == 1
 
 
 def set_poll_status(ok: bool, error: str = None, auth_error: bool = False):

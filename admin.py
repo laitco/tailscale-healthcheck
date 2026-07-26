@@ -75,6 +75,15 @@ def _setup_incomplete() -> bool:
     return not dbstore.is_tailnet_configured() or not dbstore.is_auth_configured() or not dbstore.has_any_user()
 
 
+def _needs_bootstrap() -> bool:
+    """True only when no user exists yet - the sole case where /admin/setup
+    (and posting to it) must stay unauthenticated, since there's no session
+    to require. Once a user exists, connection repair goes through a normal
+    login + /admin/settings, not this wizard - see _gate_dashboard_ui's and
+    login_page's docstrings for why that distinction matters."""
+    return not dbstore.has_any_user()
+
+
 def _validate_tailscale_credentials(tailnet_domain: str, auth_header: dict):
     """Trial call against the Tailscale devices API; raises on failure."""
     url = f"https://api.tailscale.com/api/v2/tailnet/{tailnet_domain}/devices"
@@ -88,7 +97,7 @@ def _validate_tailscale_credentials(tailnet_domain: str, auth_header: dict):
 
 @admin_bp.route("/", methods=["GET"])
 def index():
-    if _setup_incomplete():
+    if _needs_bootstrap():
         return redirect(url_for("admin.setup_page"))
     if not current_user.is_authenticated:
         return redirect(url_for("admin.login_page"))
@@ -97,6 +106,12 @@ def index():
 
 @admin_bp.route("/setup", methods=["GET"])
 def setup_page():
+    # Reachable unauthenticated only for genuine bootstrap (no user yet).
+    # Once a user exists, even with connection settings still incomplete,
+    # send them to log in first - see login_page's docstring. (login_page
+    # itself redirects an already-authenticated session on to settings.)
+    if not _needs_bootstrap() and not current_user.is_authenticated:
+        return redirect(url_for("admin.login_page"))
     if not _setup_incomplete():
         return redirect(url_for("admin.login_page"))
     return render_template("admin_setup.html")
@@ -104,7 +119,12 @@ def setup_page():
 
 @admin_bp.route("/login", methods=["GET"])
 def login_page():
-    if _setup_incomplete():
+    # Only redirect to the (unauthenticated) bootstrap wizard when there's
+    # truly no user to log into - not just because connection settings
+    # happen to be unconfigured, which can happen again post-setup (env
+    # removed, a DB row cleared, etc.) and must not lock an existing admin
+    # out of logging in to repair it via /admin/settings.
+    if _needs_bootstrap():
         return redirect(url_for("admin.setup_page"))
     if current_user.is_authenticated:
         return redirect(url_for("admin.settings_page"))
@@ -160,6 +180,17 @@ def api_status():
 def api_setup():
     if not _setup_incomplete():
         return jsonify({"error": "Setup already complete"}), 403
+
+    # Genuine first-run (no user exists yet) is intentionally unauthenticated
+    # - there's no session to require. But once a user exists, connection
+    # settings can still be cleared later (env removed, DB row wiped, etc.),
+    # re-triggering _setup_incomplete() - at that point this must require
+    # login, or any unauthenticated caller could repoint a live instance at
+    # a tailnet/credentials of their choosing. Repairing it is what the
+    # login page already redirects to /admin/setup for; api_login() still
+    # works even with connection settings unconfigured (see its comment).
+    if dbstore.has_any_user() and not current_user.is_authenticated:
+        return jsonify({"error": "Log in to repair connection settings"}), 401
 
     data = request.get_json(silent=True) or {}
     response = {}

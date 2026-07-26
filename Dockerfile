@@ -46,30 +46,16 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Expose the port the app runs on
 EXPOSE 5000
 
-# Define default environment variables
+# Define default environment variables. Only process-bootstrap concerns and
+# the TAILNET_DOMAIN sentinel (a real, non-empty value would be treated as an
+# operator-provided override and permanently lock that setting out of the
+# admin UI) belong here - everything else in SETTINGS_REGISTRY already has a
+# matching default there, so baking a duplicate non-empty ENV value in here
+# would make it un-editable via /admin/settings for every stock deployment
+# that never explicitly overrode it themselves.
 ENV TAILNET_DOMAIN=example.com
-ENV ONLINE_THRESHOLD_MINUTES=5
-ENV KEY_THRESHOLD_MINUTES=1440
-ENV GLOBAL_HEALTHY_THRESHOLD=100
-ENV GLOBAL_ONLINE_HEALTHY_THRESHOLD=100
-ENV GLOBAL_KEY_HEALTHY_THRESHOLD=100
-ENV GLOBAL_UPDATE_HEALTHY_THRESHOLD=100
-ENV UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO
 ENV PORT=5000
-ENV TIMEZONE=UTC
 ENV DATABASE_PATH=/data/healthcheck.db
-ENV POLL_INTERVAL_SECONDS=60
-ENV AUDIT_RETENTION_DAYS=14
-ENV INCLUDE_OS=""
-ENV EXCLUDE_OS=""
-ENV INCLUDE_IDENTIFIER=""
-ENV EXCLUDE_IDENTIFIER=""
-ENV INCLUDE_TAGS=""
-ENV EXCLUDE_TAGS=""
-ENV INCLUDE_IDENTIFIER_UPDATE_HEALTHY=""
-ENV EXCLUDE_IDENTIFIER_UPDATE_HEALTHY=""
-ENV INCLUDE_TAG_UPDATE_HEALTHY=""
-ENV EXCLUDE_TAG_UPDATE_HEALTHY=""
 ENV GUNICORN_TIMEOUT=120
 ENV GUNICORN_GRACEFUL_TIMEOUT=120
 
@@ -78,14 +64,17 @@ ENV GUNICORN_GRACEFUL_TIMEOUT=120
 # Define environment variable for Flask
 ENV FLASK_APP=healthcheck.py
 
-# Add a health check to verify the container is running. If HEALTH_ENDPOINT_TOKEN
-# is set via env, it's forwarded here too - if it's only set via /admin/settings
-# (not an env var), this probe will start failing once that's turned on, since
-# the token is a DB-only secret this container-local check has no way to read.
+# Add a health check to verify the container is running. Uses a small Python
+# script (not plain curl) so it can read HEALTH_ENDPOINT_TOKEN from SQLite
+# when that setting was only configured via /admin/settings, not an env var.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f -H "X-Health-Token: ${HEALTH_ENDPOINT_TOKEN}" http://localhost:$PORT/health || exit 1
+    CMD python3 /app/docker-healthcheck.py || exit 1
 
-# Container starts as root so the entrypoint can fix /data ownership for
-# arbitrary bind mounts, then drops to appuser via gosu before exec'ing gunicorn.
+# Starts as root by default so the entrypoint can fix /data ownership for
+# arbitrary bind mounts, then drops to appuser via gosu before exec'ing
+# gunicorn - but the entrypoint also works correctly if a hardened runtime
+# (e.g. Kubernetes runAsUser/runAsNonRoot) already starts it as non-root:
+# it detects that and just execs directly, skipping the chown/gosu steps it
+# wouldn't have permission for anyway (see docker-entrypoint.sh).
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "-c", "gunicorn_config.py", "healthcheck:app"]

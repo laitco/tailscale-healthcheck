@@ -117,6 +117,7 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
   poll: [
     { name: 'poll_interval_seconds', label: 'Poll interval', unit: 'seconds' },
     { name: 'audit_retention_days', label: 'Audit log retention', unit: 'days' },
+    { name: 'poller_log_retention_days', label: 'Poller activity log retention', unit: 'days' },
   ],
 }
 

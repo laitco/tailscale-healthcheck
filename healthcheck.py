@@ -335,20 +335,28 @@ _DASHBOARD_UI_PATHS = {"/", "/dashboard", "/devices", "/tailnet-keys", "/debug"}
 
 @app.before_request
 def _gate_dashboard_ui():
-    """Require setup completion + login for the human dashboard.
+    """Require login for the human dashboard, bootstrap-setup only if no user exists yet.
 
     /health*, /keys, /admin/* and static assets are unaffected - only the
     React dashboard shell routes are gated here.
+
+    Deliberately does NOT redirect to /admin/setup just because the tailnet
+    connection isn't configured once a user already exists - that used to
+    send a logged-out admin whose connection settings got cleared to the
+    (now auth-required) setup wizard with no way to actually log in first.
+    An existing user always goes through login, then can repair connection
+    settings from /admin/settings; only a genuinely user-less instance goes
+    to the unauthenticated bootstrap wizard.
     """
     path = request.path
     is_dashboard_path = path in _DASHBOARD_UI_PATHS or path.startswith("/device/")
     if not is_dashboard_path:
         return None
-    if dbstore.is_tailnet_configured() and dbstore.has_any_user():
-        if not current_user.is_authenticated:
-            return redirect(url_for("admin.login_page"))
-        return None
-    return redirect(url_for("admin.setup_page"))
+    if not dbstore.has_any_user():
+        return redirect(url_for("admin.setup_page"))
+    if not current_user.is_authenticated:
+        return redirect(url_for("admin.login_page"))
+    return None
 
 @app.before_request
 def _enforce_file_rate_limits():
@@ -1499,6 +1507,18 @@ def cache_invalidate():
     """
     if not _health_endpoint_token_ok():
         return jsonify({"error": "Unauthorized"}), 401
+    # This route is public/unauthenticated by default - without a claim,
+    # concurrent callers would each synchronously run their own full poll
+    # cycle (real outbound HTTP + DB work) in the request thread, tying up
+    # every Gunicorn worker. Only the caller that wins the short-lived claim
+    # actually polls; everyone else within that window is told a refresh is
+    # already in flight and does no outbound work at all.
+    if not dbstore.try_claim_manual_poll():
+        return jsonify({
+            "triggered": False,
+            "message": "A refresh is already in progress; try again shortly.",
+            "last_polled_at": dbstore.get_poll_meta(),
+        }), 202
     try:
         poller.run_poll_cycle()
         return jsonify({

@@ -36,6 +36,13 @@ class AdminApiError extends Error {
   }
 }
 
+// Endpoints where a 401 means "that login/setup attempt itself was
+// rejected" (wrong password, wrong code, no usable auth yet) - the caller
+// handles that inline (an error message on the form), it must NOT trigger
+// the blanket "your session expired, go to login" redirect below, or a
+// wrong-password attempt would just bounce the user back to the same page.
+const AUTH_FLOW_ENDPOINTS = ['/admin/api/login', '/admin/api/login/mfa', '/admin/api/setup', '/admin/api/status']
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -46,6 +53,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     body = await res.json()
   } catch {
     // no body
+  }
+  if (res.status === 401 && !AUTH_FLOW_ENDPOINTS.includes(url)) {
+    // Session expired, user deleted, or logged out in another tab - bounce
+    // to login rather than leaving whatever page called this stuck on a
+    // skeleton/blank state forever (the JSON 401 exists specifically so
+    // this can happen instead of silently following an HTML redirect).
+    window.location.href = '/admin/login'
+    // Never resolves - the navigation above is about to tear this page down.
+    return new Promise<T>(() => {})
   }
   if (!res.ok) {
     const message = (body as { error?: string } | null)?.error || `Request failed with status ${res.status}`

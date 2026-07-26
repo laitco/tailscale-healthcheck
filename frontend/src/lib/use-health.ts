@@ -8,6 +8,7 @@ interface HealthState {
   loading: boolean
   error: string | null
   loadedAt: number | null
+  lastAttemptAt: number | null
 }
 
 function unavailableKeysResponse(message: string): KeysResponse {
@@ -31,6 +32,7 @@ export function useHealth() {
     loading: true,
     error: null,
     loadedAt: null,
+    lastAttemptAt: null,
   })
 
   const load = useCallback(async () => {
@@ -44,7 +46,18 @@ export function useHealth() {
 
     if (healthResult.status === 'rejected') {
       const err = healthResult.reason
-      setState((s) => ({ ...s, loading: false, error: err instanceof Error ? err.message : 'Failed to load' }))
+      // lastAttemptAt (not loadedAt, which intentionally keeps the old
+      // successful snapshot on screen) is what the auto-refresh effect
+      // below reschedules from - without updating it here, a single
+      // transient failure would stop automatic refreshing permanently,
+      // since loadedAt/pollIntervalSeconds wouldn't change and the effect
+      // would never re-run to schedule the next attempt.
+      setState((s) => ({
+        ...s,
+        loading: false,
+        error: err instanceof Error ? err.message : 'Failed to load',
+        lastAttemptAt: Date.now(),
+      }))
       return
     }
 
@@ -55,7 +68,8 @@ export function useHealth() {
             keysResult.reason instanceof Error ? keysResult.reason.message : 'Failed to load tailnet keys',
           )
 
-    setState({ health: healthResult.value, keys, loading: false, error: null, loadedAt: Date.now() })
+    const now = Date.now()
+    setState({ health: healthResult.value, keys, loading: false, error: null, loadedAt: now, lastAttemptAt: now })
   }, [])
 
   const refresh = useCallback(async () => {
@@ -75,14 +89,14 @@ export function useHealth() {
   // doesn't sit on stale data until someone manually hits Refresh.
   const pollIntervalSeconds = state.health?.poll_meta?.poll_interval_seconds ?? null
   useEffect(() => {
-    if (pollIntervalSeconds == null || state.loadedAt == null) return
-    const elapsedMs = Date.now() - state.loadedAt
+    if (pollIntervalSeconds == null || state.lastAttemptAt == null) return
+    const elapsedMs = Date.now() - state.lastAttemptAt
     const remainingMs = Math.max(0, pollIntervalSeconds * 1000 - elapsedMs)
     const timer = setTimeout(() => {
       load()
     }, remainingMs)
     return () => clearTimeout(timer)
-  }, [pollIntervalSeconds, state.loadedAt, load])
+  }, [pollIntervalSeconds, state.lastAttemptAt, load])
 
   return { ...state, reload: load, refresh }
 }

@@ -126,6 +126,27 @@ def test_login_rate_limit_blocks_after_threshold(tmp_path):
     assert dbstore.check_login_rate_limit("5.6.7.8") is True
 
 
+def test_manual_poll_claim_collapses_concurrent_callers(tmp_path):
+    _fresh_db(tmp_path)
+    # First caller wins the claim...
+    assert dbstore.try_claim_manual_poll(ttl_seconds=10) is True
+    # ...every other caller within the TTL window loses it, so N concurrent
+    # /health/cache/invalidate requests only ever result in one real poll.
+    assert dbstore.try_claim_manual_poll(ttl_seconds=10) is False
+    assert dbstore.try_claim_manual_poll(ttl_seconds=10) is False
+
+
+def test_manual_poll_claim_expires(tmp_path):
+    _fresh_db(tmp_path)
+    assert dbstore.try_claim_manual_poll(ttl_seconds=-1) is True  # already-expired claim
+    # A new claim attempt after the (already-past) TTL must succeed again.
+    assert dbstore.try_claim_manual_poll(ttl_seconds=10) is True
+
+
+def test_rate_limit_storage_url_is_a_secret_setting():
+    assert "rate_limit_storage_url" in dbstore.SECRET_SETTINGS
+
+
 def test_recovery_code_cannot_be_consumed_twice_even_racing_the_check(tmp_path):
     # Simulates the race directly at the storage layer: two "concurrent"
     # attempts to claim the same still-unused row must not both succeed.

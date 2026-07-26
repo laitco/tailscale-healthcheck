@@ -158,6 +158,69 @@ def test_setup_requires_usable_auth_method(tailnet_only, monkeypatch):
     assert m.dbstore.get_setting("tailnet_domain") == "example.ts.net"
 
 
+def test_connection_repair_requires_login_once_a_user_exists(configured, monkeypatch):
+    # configured already has AUTH_TOKEN/TAILNET_DOMAIN via env and no user
+    # yet - create one, then simulate the connection settings getting
+    # cleared later (env removed, a DB row wiped, etc.), which re-triggers
+    # _setup_incomplete(). An unauthenticated caller must NOT be able to
+    # reconfigure a live instance's tailnet/credentials at that point.
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    with configured.dbstore.get_connection() as conn:
+        conn.execute("DELETE FROM settings WHERE name IN ('tailnet_domain', 'auth_token')")
+    assert configured.dbstore.has_any_user()
+    assert not configured.dbstore.is_tailnet_configured()
+
+    monkeypatch.setattr(configured.poller, "run_poll_cycle", lambda: None)
+    client = configured.app.test_client()
+    resp = client.post("/admin/api/setup", json={
+        "tailnet_domain": "attacker-controlled.ts.net",
+        "auth_mode": "token",
+        "auth_token": "whatever",
+    })
+    assert resp.status_code == 401
+    assert not configured.dbstore.is_tailnet_configured()
+
+    # The setup wizard page itself must not be reachable unauthenticated
+    # either in this state - it should send an existing, logged-out admin
+    # to log in first instead (see login_page/_gate_dashboard_ui).
+    assert client.get("/admin/setup").status_code == 302
+    assert client.get("/admin/setup").headers["Location"] == "/admin/login"
+    assert client.get("/admin/login").status_code == 200
+
+    # Once logged in, the same repair call is allowed.
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"devices": []}
+
+    monkeypatch.setattr(configured.requests, "get", lambda *a, **k: FakeResponse())
+    resp = client.post("/admin/api/setup", json={
+        "tailnet_domain": "legit.ts.net", "auth_mode": "token", "auth_token": "real-token",
+    })
+    assert resp.status_code == 200
+    assert configured.dbstore.get_setting("tailnet_domain") == "legit.ts.net"
+
+
+def test_login_page_reachable_when_user_exists_but_connection_broken(configured):
+    # Before the fix, login_page() redirected to /admin/setup whenever
+    # _setup_incomplete() was true, regardless of whether a user existed -
+    # locking an existing admin out entirely once connection settings were
+    # cleared (there'd be no way to reach a login form to repair it).
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    with configured.dbstore.get_connection() as conn:
+        conn.execute("DELETE FROM settings WHERE name IN ('tailnet_domain', 'auth_token')")
+
+    client = configured.app.test_client()
+    resp = client.get("/admin/login")
+    assert resp.status_code == 200
+
+
 def test_login_logout_flow(configured):
     configured.dbstore.create_user("admin", "correct-horse-battery-staple")
     client = configured.app.test_client()
