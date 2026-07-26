@@ -29,8 +29,22 @@ def test_setting_env_overrides_and_persists_after_env_removed(tmp_path, monkeypa
     # Env removed: the last-synced DB value should still be effective.
     monkeypatch.delenv("TAILNET_DOMAIN")
     assert dbstore.get_setting("tailnet_domain") == "example.ts.net"
+
+
+def test_removed_env_var_unlocks_setting_on_next_sync(tmp_path, monkeypatch):
+    _fresh_db(tmp_path)
+    monkeypatch.setenv("TAILNET_DOMAIN", "example.ts.net")
+    dbstore.sync_env_settings()
+    assert dbstore.get_setting_meta("tailnet_domain") == {"value": "example.ts.net", "source": "env"}
+
+    # Env removed and the process restarts (sync_env_settings runs again on boot):
+    # the value must be preserved, but source should flip back to 'db' so the
+    # admin UI unlocks the field instead of staying permanently env-locked.
+    monkeypatch.delenv("TAILNET_DOMAIN")
+    dbstore.sync_env_settings()
     meta = dbstore.get_setting_meta("tailnet_domain")
-    assert meta["source"] == "env"  # source recorded at the time it was synced
+    assert meta == {"value": "example.ts.net", "source": "db"}
+    assert dbstore.get_setting("tailnet_domain") == "example.ts.net"
 
 
 def test_setting_sentinel_values_are_not_synced(tmp_path, monkeypatch):

@@ -358,12 +358,28 @@ def sync_env_settings():
     "seed the DB from existing envs on first boot after upgrading" work for
     every setting in SETTINGS_REGISTRY, not just the original connection
     ones - it's one generic loop over the registry, not a per-setting rule.
+
+    If an env var that was previously set is later removed, the DB row must
+    stop being locked as source='env' - the last known value is kept, but
+    source flips back to 'db' so the admin UI unlocks the field again.
     """
     init_db()
     for name in SETTINGS_REGISTRY:
         value = _env_override_value(name)
         if value is not None:
             set_setting(name, value, source="env")
+        else:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT source FROM settings WHERE name = ?", (name,)
+                ).fetchone()
+            if row is not None and row["source"] == "env":
+                with get_connection() as conn:
+                    conn.execute(
+                        "UPDATE settings SET source = 'db', updated_at = ? WHERE name = ?",
+                        (_now_iso(), name),
+                    )
+                    conn.commit()
 
 
 def get_setting(name: str):

@@ -1,3 +1,6 @@
+# Local secrets/config (.env.example is the tracked template)
+.env
+
 # Virtual environments
 .venv/
 venv/
