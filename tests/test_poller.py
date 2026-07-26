@@ -84,6 +84,38 @@ def test_poll_cycle_skips_when_tailnet_unconfigured(tmp_path):
     assert dbstore.get_poll_meta() is None
 
 
+def test_poll_cycle_skips_when_auth_unconfigured(tmp_path, monkeypatch):
+    # Tailnet domain set, but no AUTH_TOKEN/OAuth - a fresh/unconfigured
+    # instance (or one where auth was removed) must not hit the Tailscale
+    # API at all, not even with the placeholder token, every poll cycle.
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+    monkeypatch.setenv("TAILNET_DOMAIN", "example.ts.net")
+    dbstore.sync_env_settings()
+    assert dbstore.is_tailnet_configured()
+    assert not dbstore.is_auth_configured()
+
+    calls = {"count": 0}
+    fake = _fake_healthcheck_module([], [])
+
+    def tracked_request(*a, **k):
+        calls["count"] += 1
+        return fake.make_authenticated_request(*a, **k)
+
+    fake.make_authenticated_request = tracked_request
+    sys.modules["healthcheck"] = fake
+    try:
+        poller.run_poll_cycle()
+    finally:
+        sys.modules.pop("healthcheck", None)
+
+    assert calls["count"] == 0
+    assert dbstore.get_poll_meta() is None
+    events = {e["event_type"] for e in dbstore.list_poller_log()}
+    assert "poll_skipped" in events
+    assert "poll_started" not in events
+
+
 def test_is_auth_error_detects_401_403_only():
     resp_401 = types.SimpleNamespace(status_code=401)
     resp_500 = types.SimpleNamespace(status_code=500)

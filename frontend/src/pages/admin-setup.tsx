@@ -11,7 +11,7 @@ export default function AdminSetupPage() {
   const navigate = useNavigate()
   const [status, setStatus] = useState<AdminStatus | null>(null)
   const [tailnetDomain, setTailnetDomain] = useState('')
-  const [authMode, setAuthMode] = useState<'token' | 'oauth'>('token')
+  const [authMode, setAuthMode] = useState<'token' | 'oauth'>('oauth')
   const [authToken, setAuthToken] = useState('')
   const [oauthClientId, setOauthClientId] = useState('')
   const [oauthClientSecret, setOauthClientSecret] = useState('')
@@ -128,8 +128,8 @@ export default function AdminSetupPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="oauth">OAuth client (recommended)</SelectItem>
                   <SelectItem value="token">API access token</SelectItem>
-                  <SelectItem value="oauth">OAuth client</SelectItem>
                 </SelectContent>
               </Select>
             </div>
