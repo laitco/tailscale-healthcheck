@@ -25,7 +25,7 @@ export default function AdminSetupPage() {
   useEffect(() => {
     fetchAdminStatus()
       .then(setStatus)
-      .catch(() => setStatus({ tailnet_configured: false, has_users: false, authenticated: false }))
+      .catch(() => setStatus({ tailnet_configured: false, has_users: false, authenticated: false, version: 'unknown' }))
   }, [])
 
   if (!status) {

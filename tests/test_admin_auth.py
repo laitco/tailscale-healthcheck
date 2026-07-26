@@ -53,6 +53,18 @@ def test_setup_redirect_when_no_users_even_if_tailnet_configured(configured):
     assert resp.headers["Location"] == "/admin/setup"
 
 
+def test_status_endpoint_reports_app_version(unconfigured):
+    # /admin/api/status is intentionally unauthenticated (the setup/login
+    # pages need it before a session exists), and doubles as the source the
+    # sidebar reads the app version from (issue #36).
+    client = unconfigured.app.test_client()
+    resp = client.get("/admin/api/status")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "version" in data
+    assert data["version"] and data["version"] != "unknown"
+
+
 def test_login_redirect_once_setup_is_complete(configured):
     configured.dbstore.create_user("admin", "correct-horse-battery-staple")
     client = configured.app.test_client()

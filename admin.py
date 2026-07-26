@@ -11,6 +11,7 @@ enforcement (see enforce_read_only_methods) since it's the one place in the
 app that legitimately needs POST/DELETE.
 """
 import logging
+import os
 import secrets
 
 import requests
@@ -21,6 +22,24 @@ import dbstore
 import poller
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+
+def _read_app_version() -> str:
+    """Read the app version from the repo-root VERSION file, once at import.
+
+    Falls back to "unknown" rather than raising - version display is a
+    cosmetic feature and must never break app startup if the file is
+    missing (e.g. an unusual deployment that doesn't copy it in).
+    """
+    version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+    try:
+        with open(version_path, "r", encoding="utf-8") as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+APP_VERSION = _read_app_version()
 
 MASKED_SETTINGS = {"auth_token", "oauth_client_secret", "health_endpoint_token"}
 
@@ -132,6 +151,7 @@ def api_status():
         "tailnet_configured": dbstore.is_tailnet_configured(),
         "has_users": dbstore.has_any_user(),
         "authenticated": current_user.is_authenticated,
+        "version": APP_VERSION,
     })
 
 

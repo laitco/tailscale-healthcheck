@@ -4,6 +4,7 @@ export type AdminStatus = {
   tailnet_configured: boolean
   has_users: boolean
   authenticated: boolean
+  version: string
 }
 
 export type AdminSettings = SettingsResponse

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { LayoutDashboard, Laptop, KeyRound, Bug, Network, RefreshCw, Settings, Users, ScrollText, LogOut, BookOpen, UserCircle } from 'lucide-react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
@@ -13,8 +14,34 @@ import {
 } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useHealthContext } from '@/lib/health-context'
-import { logout } from '@/lib/admin-api'
+import { logout, fetchAdminStatus } from '@/lib/admin-api'
 import { cn } from '@/lib/utils'
+
+function VersionFooter() {
+  const [version, setVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchAdminStatus()
+      .then((status) => {
+        if (!cancelled) setVersion(status.version)
+      })
+      .catch(() => {
+        // Version display is cosmetic - a failed fetch just leaves it blank.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!version) return null
+
+  return (
+    <div className="truncate px-2 pb-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+      v{version}
+    </div>
+  )
+}
 
 const navItems = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -165,6 +192,7 @@ export function AppSidebar() {
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
+      <VersionFooter />
     </Sidebar>
   )
 }
