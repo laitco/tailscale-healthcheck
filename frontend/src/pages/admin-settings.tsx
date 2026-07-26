@@ -335,9 +335,25 @@ export default function AdminSettingsPage() {
     )
   }
 
+  const dirtyCount = Object.keys(draft).length
+
   return (
     <div className="space-y-4">
       <form onSubmit={onSave} className="space-y-4">
+        <div className="sticky top-0 z-10 -mx-4 -mt-4 flex flex-wrap items-center justify-between gap-3 border-b bg-background/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:-mt-6 sm:px-6">
+          <div>
+            <h2 className="text-sm font-semibold">Settings</h2>
+            <p className="text-xs text-muted-foreground">
+              {dirtyCount > 0
+                ? `${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}`
+                : 'All changes saved'}
+            </p>
+          </div>
+          <Button type="submit" disabled={saving || dirtyCount === 0}>
+            {saving ? 'Saving…' : dirtyCount > 0 ? `Save ${dirtyCount} change${dirtyCount === 1 ? '' : 's'}` : 'Save changes'}
+          </Button>
+        </div>
+
         {message && (
           <div
             className={
@@ -374,10 +390,6 @@ export default function AdminSettingsPage() {
             </Card>
           ))}
         </div>
-
-        <Button type="submit" disabled={saving}>
-          {saving ? 'Saving…' : 'Save changes'}
-        </Button>
       </form>
 
       <Card>

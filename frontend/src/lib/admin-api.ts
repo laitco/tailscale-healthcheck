@@ -60,8 +60,12 @@ export function submitSetup(payload: Record<string, string>): Promise<{ setup_co
   return request('/admin/api/setup', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function login(username: string, password: string): Promise<{ ok: boolean }> {
+export function login(username: string, password: string): Promise<{ ok: boolean; mfa_required?: boolean }> {
   return request('/admin/api/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+}
+
+export function loginMfa(payload: { code?: string; recovery_code?: string }): Promise<{ ok: boolean; username: string }> {
+  return request('/admin/api/login/mfa', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function logout(): Promise<{ ok: boolean }> {
@@ -164,6 +168,28 @@ export function fetchMetricsHistory(hours = 24): Promise<{ entries: MetricsHisto
 
 export function generateToken(): Promise<{ token: string }> {
   return request('/admin/api/settings/generate-token', { method: 'POST' })
+}
+
+export type ProfileResponse = { username: string; mfa: { enabled: boolean } }
+
+export function fetchProfile(): Promise<ProfileResponse> {
+  return request('/admin/api/profile')
+}
+
+export function changePassword(current_password: string, new_password: string): Promise<{ ok: boolean }> {
+  return request('/admin/api/profile/password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) })
+}
+
+export function enrollMfa(): Promise<{ secret: string; provisioning_uri: string }> {
+  return request('/admin/api/profile/mfa/enroll', { method: 'POST' })
+}
+
+export function confirmMfa(code: string): Promise<{ ok: boolean; recovery_codes: string[] }> {
+  return request('/admin/api/profile/mfa/confirm', { method: 'POST', body: JSON.stringify({ code }) })
+}
+
+export function disableMfa(code: string): Promise<{ ok: boolean }> {
+  return request('/admin/api/profile/mfa/disable', { method: 'POST', body: JSON.stringify({ code }) })
 }
 
 export { AdminApiError }

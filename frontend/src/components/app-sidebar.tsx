@@ -1,4 +1,4 @@
-import { LayoutDashboard, Laptop, KeyRound, Bug, Network, RefreshCw, Settings, Users, ScrollText, LogOut, BookOpen } from 'lucide-react'
+import { LayoutDashboard, Laptop, KeyRound, Bug, Network, RefreshCw, Settings, Users, ScrollText, LogOut, BookOpen, UserCircle } from 'lucide-react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Sidebar,
@@ -11,6 +11,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useHealthContext } from '@/lib/health-context'
 import { logout } from '@/lib/admin-api'
 import { cn } from '@/lib/utils'
@@ -28,6 +29,47 @@ const adminItems = [
   { to: '/admin/audit', label: 'Audit Log', icon: ScrollText },
   { to: '/admin/api-docs', label: 'API Docs', icon: BookOpen },
 ]
+
+function ConnectionStatus() {
+  const { health } = useHealthContext()
+  const pollMeta = health?.poll_meta
+
+  // Reuses the exact same signal the overview page's "can't reach Tailscale"
+  // banner is driven by - last_poll_ok/last_poll_auth_error from the
+  // background poller - rather than a second, potentially-diverging source
+  // of truth for connectivity.
+  let dotClass = 'bg-muted-foreground'
+  let label = 'Checking connection…'
+  let detail = 'No poll has completed yet.'
+  if (pollMeta?.last_poll_ok === true) {
+    dotClass = 'bg-success'
+    label = 'Connected'
+    detail = 'The Tailscale API is reachable.'
+  } else if (pollMeta?.last_poll_ok === false) {
+    dotClass = 'bg-destructive'
+    label = pollMeta.last_poll_auth_error ? 'Auth error' : 'Disconnected'
+    detail = pollMeta.last_poll_auth_error
+      ? 'Check your auth token/OAuth credentials in Settings.'
+      : pollMeta.last_poll_error || 'Unable to reach the Tailscale API.'
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground">
+          <span className={cn('size-2 shrink-0 rounded-full', dotClass)} aria-hidden="true" />
+          <span className="truncate group-data-[collapsible=icon]:hidden">{label}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        <div>
+          <p className="font-medium">{label}</p>
+          <p className="text-background/80">{detail}</p>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
 
 export function AppSidebar() {
   const { refresh, loading } = useHealthContext()
@@ -95,11 +137,25 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarMenu className="p-2">
+      <div className="px-2 pt-2">
+        <ConnectionStatus />
+      </div>
+      <SidebarMenu className="p-2 pt-1">
         <SidebarMenuItem>
           <SidebarMenuButton onClick={refresh} disabled={loading} tooltip="Refresh">
             <RefreshCw className={loading ? 'animate-spin' : ''} />
             <span>Refresh</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton asChild tooltip="Profile">
+            <NavLink
+              to="/admin/profile"
+              className={({ isActive }) => cn(isActive && 'bg-sidebar-accent text-sidebar-accent-foreground')}
+            >
+              <UserCircle />
+              <span>Profile</span>
+            </NavLink>
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>

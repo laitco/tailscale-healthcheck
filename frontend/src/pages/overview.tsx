@@ -105,8 +105,17 @@ export default function OverviewPage() {
         <MetricCard
           title="Overall Health"
           value={metrics.global_healthy ? 'Healthy' : 'Issues'}
+          subtitle={`${metrics.counter_healthy_false} issue${metrics.counter_healthy_false === 1 ? '' : 's'} · trend below`}
           ok={metrics.global_healthy}
-          trend={trend((e) => e.counter_healthy_true)}
+          // Plot the *issues* count, not the healthy count - the headline
+          // value here is framed as "Healthy"/"Issues", so the trend must
+          // move in the same direction as that framing (up = more issues)
+          // or a device recovering (issues count going DOWN) visually reads
+          // as the chart "getting worse" even though nothing did. The other
+          // tiles below plot their own positive count (e.g. "X / Y online")
+          // where up-is-good already matches their headline number, so they
+          // don't have this ambiguity.
+          trend={trend((e) => e.counter_healthy_false)}
           trendTimestamps={timestamps}
           trendTimezone={timezone}
         />

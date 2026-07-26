@@ -15,7 +15,37 @@ def test_schema_creates_tables(tmp_path):
     _fresh_db(tmp_path)
     with dbstore.get_connection() as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"settings", "users", "devices", "tailnet_keys", "audit_log"} <= tables
+    assert {"settings", "users", "devices", "tailnet_keys", "audit_log", "user_recovery_codes"} <= tables
+
+
+def test_init_db_migrates_pre_mfa_users_table(tmp_path):
+    """Simulates an existing production DB created before totp_secret/
+    totp_enabled existed - init_db() must ALTER TABLE it in place rather
+    than assuming CREATE TABLE IF NOT EXISTS is enough."""
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    with dbstore.get_connection() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            ("legacy", "hash", "2024-01-01T00:00:00+00:00"),
+        )
+
+    dbstore.init_db()  # must not raise, and must add the missing columns
+
+    with dbstore.get_connection() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    assert {"totp_secret", "totp_enabled"} <= columns
+    assert dbstore.get_user_mfa_status("legacy") == {"enabled": False}
 
 
 def test_setting_env_overrides_and_persists_after_env_removed(tmp_path, monkeypatch):

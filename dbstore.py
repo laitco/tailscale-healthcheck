@@ -13,6 +13,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+import pyotp
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # Every runtime-configurable app setting, keyed by DB setting name. Each spec
@@ -284,8 +285,25 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_poller_log_occurred_at ON poller_log(occurred_at);
             CREATE INDEX IF NOT EXISTS idx_poller_log_event_type ON poller_log(event_type);
+
+            CREATE TABLE IF NOT EXISTS user_recovery_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                code_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                used_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_recovery_codes_user_id ON user_recovery_codes(user_id);
             """
         )
+        # users table predates totp_secret/totp_enabled - add them for
+        # existing databases (CREATE TABLE IF NOT EXISTS above only handles
+        # brand new installs; ALTER TABLE is needed for upgrades in place).
+        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+        if "totp_secret" not in existing_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+        if "totp_enabled" not in existing_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
 
 
 # ---------------------------------------------------------------------------
@@ -594,14 +612,136 @@ def list_users():
 
 
 def verify_password(username: str, password: str):
+    """Check credentials only - does NOT record last_login_at, since a user
+    with MFA enabled isn't actually logged in until the TOTP/recovery step
+    also succeeds. Call touch_last_login() once the session is truly
+    established (see admin.py's login routes)."""
     user = get_user_by_username(username)
     if not user:
         return None
     if not check_password_hash(user["password_hash"], password):
         return None
-    with get_connection() as conn:
-        conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now_iso(), user["id"]))
     return user
+
+
+def touch_last_login(user_id: int):
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now_iso(), user_id))
+
+
+def change_password(username: str, current_password: str, new_password: str) -> bool:
+    """Verify current_password, then set new_password. Returns False if the
+    current password didn't match (caller decides how to report that)."""
+    user = get_user_by_username(username)
+    if not user or not check_password_hash(user["password_hash"], current_password):
+        return False
+    password_hash = generate_password_hash(new_password)
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user["id"]))
+        _add_audit(conn, "user", username, "updated", {"password": {"old": "***", "new": "***"}}, actor=username)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# TOTP MFA
+#
+# Enrollment is two-step: generate_totp_secret() hands back a secret that the
+# caller (admin.py) keeps only in the signed Flask session, NOT the DB, until
+# confirm_totp_enable() verifies the user actually configured their
+# authenticator correctly. Only then is the secret persisted and totp_enabled
+# flipped on - an abandoned/incorrect enrollment never touches the DB.
+# ---------------------------------------------------------------------------
+
+def generate_totp_secret() -> str:
+    return pyotp.random_base32()
+
+
+def totp_provisioning_uri(username: str, secret: str) -> str:
+    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name="TailscaleHealthcheck")
+
+
+def verify_totp_code(secret: str, code: str) -> bool:
+    if not secret or not code:
+        return False
+    try:
+        return pyotp.TOTP(secret).verify(str(code).strip(), valid_window=1)
+    except Exception:
+        return False
+
+
+def get_user_mfa_status(username: str) -> dict:
+    user = get_user_by_username(username)
+    if not user:
+        return {"enabled": False}
+    return {"enabled": bool(user.get("totp_enabled"))}
+
+
+def _generate_recovery_codes(n: int = 10):
+    return [secrets.token_hex(5) for _ in range(n)]
+
+
+def confirm_totp_enable(username: str, secret: str, code: str, actor: str = None):
+    """Verify `code` against the pending `secret`; on success persist the
+    secret as active, generate fresh recovery codes (returned once, only
+    hashes are stored), and return them. Returns None if the code is wrong."""
+    if not verify_totp_code(secret, code):
+        return None
+    user = get_user_by_username(username)
+    if not user:
+        return None
+    recovery_codes = _generate_recovery_codes()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE id = ?",
+            (secret, user["id"]),
+        )
+        conn.execute("DELETE FROM user_recovery_codes WHERE user_id = ?", (user["id"],))
+        now = _now_iso()
+        conn.executemany(
+            "INSERT INTO user_recovery_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)",
+            [(user["id"], generate_password_hash(c), now) for c in recovery_codes],
+        )
+        _add_audit(conn, "user", username, "updated", {"mfa": {"old": "disabled", "new": "enabled"}}, actor=actor)
+    return recovery_codes
+
+
+def disable_totp(username: str, code: str, actor: str = None) -> bool:
+    """Require a valid current TOTP code before disabling MFA."""
+    user = get_user_by_username(username)
+    if not user or not user.get("totp_enabled"):
+        return False
+    if not verify_totp_code(user.get("totp_secret") or "", code):
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?",
+            (user["id"],),
+        )
+        conn.execute("DELETE FROM user_recovery_codes WHERE user_id = ?", (user["id"],))
+        _add_audit(conn, "user", username, "updated", {"mfa": {"old": "enabled", "new": "disabled"}}, actor=actor)
+    return True
+
+
+def verify_recovery_code(username: str, code: str) -> bool:
+    """Constant-time-hash-compare a recovery code (same mechanism as password
+    hashing) against a user's unused codes; marks it used on success so it
+    can't be replayed."""
+    user = get_user_by_username(username)
+    if not user or not code:
+        return False
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, code_hash FROM user_recovery_codes WHERE user_id = ? AND used_at IS NULL",
+            (user["id"],),
+        ).fetchall()
+        for row in rows:
+            if check_password_hash(row["code_hash"], code.strip()):
+                conn.execute(
+                    "UPDATE user_recovery_codes SET used_at = ? WHERE id = ?",
+                    (_now_iso(), row["id"]),
+                )
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------

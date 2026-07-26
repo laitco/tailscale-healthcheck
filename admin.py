@@ -14,7 +14,7 @@ import logging
 import secrets
 
 import requests
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 import dbstore
@@ -96,6 +96,12 @@ def login_page():
 @login_required
 def settings_page():
     return render_template("admin_settings.html")
+
+
+@admin_bp.route("/profile", methods=["GET"])
+@login_required
+def profile_page():
+    return render_template("admin_profile.html")
 
 
 @admin_bp.route("/users", methods=["GET"])
@@ -216,8 +222,46 @@ def api_login():
     user_row = dbstore.verify_password(username, password)
     if not user_row:
         return jsonify({"error": "Invalid username or password"}), 401
+
+    if user_row.get("totp_enabled"):
+        # Don't establish the session yet - a second factor is still required.
+        # Only the pending user id goes in the (signed, httponly) session
+        # cookie, nothing that could itself grant access.
+        session["mfa_pending_user_id"] = user_row["id"]
+        return jsonify({"ok": True, "mfa_required": True})
+
     from auth import User
     login_user(User.from_row(user_row))
+    dbstore.touch_last_login(user_row["id"])
+    return jsonify({"ok": True, "username": user_row["username"]})
+
+
+@admin_bp.route("/api/login/mfa", methods=["POST"])
+def api_login_mfa():
+    pending_id = session.get("mfa_pending_user_id")
+    user_row = dbstore.get_user_by_id(pending_id) if pending_id else None
+    if not user_row:
+        return jsonify({"error": "No pending sign-in awaiting a verification code"}), 400
+
+    data = request.get_json(silent=True) or {}
+    code = str(data.get("code", "")).strip()
+    recovery_code = str(data.get("recovery_code", "")).strip()
+
+    verified = False
+    if code:
+        verified = dbstore.verify_totp_code(user_row.get("totp_secret") or "", code)
+    if not verified and recovery_code:
+        verified = dbstore.verify_recovery_code(user_row["username"], recovery_code)
+
+    if not verified:
+        # Deliberately the same generic message shape as the password step -
+        # don't distinguish "wrong code" from "wrong recovery code" etc.
+        return jsonify({"error": "Invalid verification code"}), 401
+
+    session.pop("mfa_pending_user_id", None)
+    from auth import User
+    login_user(User.from_row(user_row))
+    dbstore.touch_last_login(user_row["id"])
     return jsonify({"ok": True, "username": user_row["username"]})
 
 
@@ -225,6 +269,74 @@ def api_login():
 @login_required
 def api_logout():
     logout_user()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Profile: password change + TOTP MFA
+# ---------------------------------------------------------------------------
+
+@admin_bp.route("/api/profile", methods=["GET"])
+@login_required
+def api_profile():
+    return jsonify({
+        "username": current_user.username,
+        "mfa": dbstore.get_user_mfa_status(current_user.username),
+    })
+
+
+@admin_bp.route("/api/profile/password", methods=["POST"])
+@login_required
+def api_profile_password():
+    data = request.get_json(silent=True) or {}
+    current_password = str(data.get("current_password", ""))
+    new_password = str(data.get("new_password", ""))
+    if len(new_password) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+    if not dbstore.change_password(current_user.username, current_password, new_password):
+        return jsonify({"error": "Current password is incorrect"}), 401
+    return jsonify({"ok": True})
+
+
+@admin_bp.route("/api/profile/mfa/enroll", methods=["POST"])
+@login_required
+def api_profile_mfa_enroll():
+    if dbstore.get_user_mfa_status(current_user.username)["enabled"]:
+        return jsonify({"error": "MFA is already enabled"}), 400
+    secret = dbstore.generate_totp_secret()
+    # Kept only in the signed session until confirmed - never written to the
+    # DB as "enabled" for an enrollment the user might abandon.
+    session["totp_pending_secret"] = secret
+    return jsonify({
+        "secret": secret,
+        "provisioning_uri": dbstore.totp_provisioning_uri(current_user.username, secret),
+    })
+
+
+@admin_bp.route("/api/profile/mfa/confirm", methods=["POST"])
+@login_required
+def api_profile_mfa_confirm():
+    secret = session.get("totp_pending_secret")
+    if not secret:
+        return jsonify({"error": "No MFA enrollment in progress - start over"}), 400
+    data = request.get_json(silent=True) or {}
+    code = str(data.get("code", "")).strip()
+    recovery_codes = dbstore.confirm_totp_enable(current_user.username, secret, code, actor=current_user.username)
+    if recovery_codes is None:
+        return jsonify({"error": "Invalid verification code"}), 400
+    session.pop("totp_pending_secret", None)
+    # Recovery codes are returned exactly once here - only their hashes are
+    # ever persisted, the plaintext values cannot be retrieved again.
+    return jsonify({"ok": True, "recovery_codes": recovery_codes})
+
+
+@admin_bp.route("/api/profile/mfa/disable", methods=["POST"])
+@login_required
+def api_profile_mfa_disable():
+    data = request.get_json(silent=True) or {}
+    code = str(data.get("code", "")).strip()
+    if not dbstore.disable_totp(current_user.username, code, actor=current_user.username):
+        return jsonify({"error": "A valid current verification code is required to disable MFA"}), 400
     return jsonify({"ok": True})
 
 

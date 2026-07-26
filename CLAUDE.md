@@ -163,6 +163,19 @@ Key pieces, in the order a change usually touches them:
   time) is what pins the path for the rest of that module-load, since `dbstore` itself is cached in
   `sys.modules` across dynamically-reloaded copies of `healthcheck.py`.
 
+## Frontend gotcha: `<main>` must not set `overflow-x` without also affecting `overflow-y`
+
+`frontend/src/components/layout.tsx`'s `<main>` has no `overflow-x-auto` (removed deliberately). Per the CSS
+overflow spec, setting `overflow-x` to anything other than `visible` forces the *computed* `overflow-y` to
+`auto` too — even if you explicitly write `overflow-y: visible` on the same element, it still computes to
+`auto`; there's no way to have one axis scrollable and the other truly `visible` on the same box. That
+matters here because `<main>` grows to fit its content (no fixed height), so it never develops its own
+scrollbar — but by becoming a non-`visible` overflow ancestor, it silently becomes the reference box for
+every `position: sticky` descendant instead of the viewport, and since `<main>` itself never scrolls, those
+sticky elements just sit inert instead of sticking. If you need horizontal scroll for wide content (tables,
+etc.), add `overflow-x-auto` to that specific element/wrapper (see `device-table.tsx`, `keys-table.tsx`,
+`admin-audit.tsx`, or the base `ui/table.tsx`, which already does this) — never back on `<main>`.
+
 ## Coding style
 
 - Python 3.12, four-space indentation, `snake_case` functions/variables, `PascalCase` classes,
