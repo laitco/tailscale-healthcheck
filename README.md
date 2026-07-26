@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/laitco/tailscale-healthcheck?style=social" alt="GitHub Stars">
-  <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml?branch=main" alt="GitHub Workflow Status">
+  <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/release.yaml?branch=main" alt="GitHub Workflow Status">
   <img src="https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck" alt="Docker Pulls">
   <img src="https://img.shields.io/github/license/laitco/tailscale-healthcheck" alt="License">
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
@@ -40,7 +40,6 @@
   - [Testing](#testing)
 - [📜 License](#-license)
 - [🤝 Contributing](#-contributing)
-- [⭐ Star History](#-star-history)
 
 ## ✨ Description
 
@@ -635,7 +634,3 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ## 🤝 Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=laitco/tailscale-healthcheck&type=Date)](https://www.star-history.com/#laitco/tailscale-healthcheck&Date)
