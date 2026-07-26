@@ -71,19 +71,18 @@ export function useHealth() {
     load()
   }, [load])
 
-  // Mirror the old server-rendered dashboard's behavior: once the backend
-  // cache entry expires, automatically refetch so the UI doesn't sit on
-  // stale data until someone manually hits Refresh.
-  const ttlSeconds = state.health?.cache_meta?.ttl_seconds ?? null
+  // Auto-refetch on the same cadence as the background poller, so the UI
+  // doesn't sit on stale data until someone manually hits Refresh.
+  const pollIntervalSeconds = state.health?.poll_meta?.poll_interval_seconds ?? null
   useEffect(() => {
-    if (ttlSeconds == null || state.loadedAt == null) return
+    if (pollIntervalSeconds == null || state.loadedAt == null) return
     const elapsedMs = Date.now() - state.loadedAt
-    const remainingMs = Math.max(0, ttlSeconds * 1000 - elapsedMs)
+    const remainingMs = Math.max(0, pollIntervalSeconds * 1000 - elapsedMs)
     const timer = setTimeout(() => {
       load()
     }, remainingMs)
     return () => clearTimeout(timer)
-  }, [ttlSeconds, state.loadedAt, load])
+  }, [pollIntervalSeconds, state.loadedAt, load])
 
   return { ...state, reload: load, refresh }
 }

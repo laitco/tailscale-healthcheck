@@ -1,6 +1,7 @@
 import os
 import logging
 from healthcheck import initialize_oauth  # Import the OAuth initialization function
+import poller
 
 # Configure logging with safe default (INFO) and env override
 def _get_log_level_from_env(default=logging.INFO):
@@ -22,6 +23,14 @@ def on_starting(server):
         initialize_oauth()
     else:
         logging.info("Gunicorn master process starting. Using AUTH_TOKEN for authentication. Skipping OAuth initialization.")
+
+def post_fork(server, worker):
+    """
+    Hook that runs in each worker process after fork. Only one worker (the
+    one that wins the fcntl lock election in poller.start()) actually runs
+    the background poll loop; the rest no-op.
+    """
+    poller.start()
 
 def worker_exit(server, worker):
     """

@@ -27,13 +27,21 @@ COPY --from=frontend-build /static/app /app/static/app
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install curl for health checks
+# Install curl for health checks and gosu for dropping privileges after fixing
+# up bind-mount ownership in the entrypoint (see docker-entrypoint.sh)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure application files are owned by the non-root user
 RUN chown -R appuser:app /app
+
+# Persistent SQLite database (settings, users, device/key snapshots, audit log)
+RUN mkdir -p /data && chown appuser:app /data
+VOLUME ["/data"]
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose the port the app runs on
 EXPOSE 5000
@@ -47,9 +55,11 @@ ENV GLOBAL_ONLINE_HEALTHY_THRESHOLD=100
 ENV GLOBAL_KEY_HEALTHY_THRESHOLD=100
 ENV GLOBAL_UPDATE_HEALTHY_THRESHOLD=100
 ENV UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO
-ENV DISPLAY_SETTINGS_IN_OUTPUT=NO
 ENV PORT=5000
 ENV TIMEZONE=UTC
+ENV DATABASE_PATH=/data/healthcheck.db
+ENV POLL_INTERVAL_SECONDS=60
+ENV AUDIT_RETENTION_DAYS=14
 ENV INCLUDE_OS=""
 ENV EXCLUDE_OS=""
 ENV INCLUDE_IDENTIFIER=""
@@ -72,8 +82,7 @@ ENV FLASK_APP=healthcheck.py
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
-# Switch to the non-root user for running the application
-USER appuser
-
-# Use ENTRYPOINT to allow passing arguments like --help
-ENTRYPOINT ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "-c", "gunicorn_config.py", "healthcheck:app"]
+# Container starts as root so the entrypoint can fix /data ownership for
+# arbitrary bind mounts, then drops to appuser via gosu before exec'ing gunicorn.
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "-c", "gunicorn_config.py", "healthcheck:app"]

@@ -10,6 +10,10 @@ const TITLES: { test: (path: string) => boolean; title: string }[] = [
   { test: (p) => p === '/tailnet-keys', title: 'Tailnet Keys' },
   { test: (p) => p === '/debug', title: 'Debug' },
   { test: (p) => p.startsWith('/device/'), title: 'Device' },
+  { test: (p) => p === '/admin/settings', title: 'Settings' },
+  { test: (p) => p === '/admin/users', title: 'Users' },
+  { test: (p) => p === '/admin/audit', title: 'Audit Log' },
+  { test: (p) => p === '/admin/api-docs', title: 'API Docs' },
 ]
 
 function useTitle() {

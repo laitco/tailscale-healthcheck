@@ -1,3 +1,25 @@
+export interface SettingField {
+  value: string | number | boolean | null
+  source: 'env' | 'db' | null
+  configured: boolean
+  type: 'str' | 'int' | 'float' | 'bool'
+  default: string | number | boolean | null
+  group: string
+  secret: boolean
+  env_var: string
+  restart_required: boolean
+}
+
+export interface SettingsMeta {
+  last_polled_at: string | null
+  poll_interval_seconds: number
+  last_poll_ok?: boolean | null
+  last_poll_error?: string | null
+  last_poll_auth_error?: boolean
+}
+
+export type SettingsResponse = Record<string, SettingField> & { _meta: SettingsMeta }
+
 export interface Device {
   id: string
   hostname: string
@@ -32,18 +54,18 @@ export interface HealthMetrics {
   [key: string]: unknown
 }
 
-export interface CacheMeta {
-  hit: boolean
-  backend: string
-  expires_at: string | null
-  ttl_seconds: number | null
-  loaded_at_iso: string | null
+export interface PollMeta {
+  last_polled_at: string | null
+  poll_interval_seconds: number
+  last_poll_ok?: boolean | null
+  last_poll_error?: string | null
+  last_poll_auth_error?: boolean
 }
 
 export interface HealthResponse {
   devices: Device[]
   metrics: HealthMetrics
-  cache_meta?: CacheMeta
+  poll_meta?: PollMeta
   settings?: Record<string, unknown>
 }
 
