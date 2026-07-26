@@ -1,3 +1,12 @@
+# Build the React (shadcn/ui) web dashboard
+FROM node:22-slim AS frontend-build
+WORKDIR /frontend
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm build
+
 # Use an official Python runtime as a parent image
 FROM python:3.12-slim
 
@@ -10,6 +19,10 @@ RUN groupadd -r app && useradd -r -g app -u 10001 appuser
 
 # Copy the current directory contents into the container
 COPY . /app
+
+# Copy the built dashboard assets (built by the frontend-build stage above;
+# frontend/vite.config.ts outputs to ../static/app relative to /frontend, i.e. /static/app)
+COPY --from=frontend-build /static/app /app/static/app
 
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt

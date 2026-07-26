@@ -72,16 +72,21 @@ def module():
 
 
 def test_dashboard_renders(module):
+    # The dashboard is a client-rendered React app; the Flask route only
+    # serves the mount shell that loads the built bundle.
     app = module.app
     client = app.test_client()
     resp = client.get("/")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "Tailscale Healthcheck" in body
-    assert "dev1" in body
+    assert '<div id="root"></div>' in body
+    assert "/static/app/app.js" in body
 
 
 def test_dashboard_settings_render_when_enabled():
+    # Settings are no longer server-rendered into HTML; the React app reads
+    # them from the /health JSON payload instead.
     m = _load_healthcheck_with_env({
         "CACHE_ENABLED": "NO",
         "DISPLAY_SETTINGS_IN_OUTPUT": "YES",
@@ -92,20 +97,36 @@ def test_dashboard_settings_render_when_enabled():
     })
     m.fetch_devices = lambda: _sample_devices()
     client = m.app.test_client()
-    resp = client.get("/")
+    resp = client.get("/health")
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "Settings (redacted)" in html
-    assert "TAILNET_DOMAIN" in html
-    assert "RATE_LIMIT_ENABLED" in html
+    data = resp.get_json()
+    assert "settings" in data
+    assert data["settings"]["TAILNET_DOMAIN"] == "example.com"
+    assert "RATE_LIMIT_ENABLED" in data["settings"]
 
 
 def test_device_detail_renders(module):
+    # Device data (including whether the identifier even exists) is fetched
+    # client-side from /health/<identifier>; the Flask route only serves the
+    # shell, unconditionally, so a slow/failing upstream never blocks it.
     app = module.app
     client = app.test_client()
     resp = client.get("/device/dev1")
     assert resp.status_code == 200
-    assert "dev1" in resp.get_data(as_text=True)
+    body = resp.get_data(as_text=True)
+    assert '<div id="root"></div>' in body
+    assert "/static/app/app.js" in body
+
+
+def test_devices_and_tailnet_keys_and_debug_shells_render(module):
+    app = module.app
+    client = app.test_client()
+    for path in ("/devices", "/tailnet-keys", "/debug"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert '<div id="root"></div>' in body
+        assert "/static/app/app.js" in body
 
 
 def test_404_json_when_requested(module):
@@ -118,9 +139,13 @@ def test_404_json_when_requested(module):
 
 
 def test_404_ui_for_html(module):
+    # The 404 message itself is rendered client-side by the React app's
+    # not-found route; the Flask route just serves the mount shell with a
+    # 404 status and title.
     app = module.app
     client = app.test_client()
     resp = client.get("/missing")
     assert resp.status_code == 404
     body = resp.get_data(as_text=True)
-    assert "404 Not Found" in body
+    assert "404" in body
+    assert '<div id="root"></div>' in body

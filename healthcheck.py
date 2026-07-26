@@ -946,19 +946,6 @@ def _compute_health_summary(devices):
     }
     return health_status, metrics
 
-def _find_device_by_identifier(identifier: str, devices):
-    ident = identifier.strip().lower()
-    for device in devices:
-        names = [
-            device.get("id", "").lower(),
-            device.get("hostname", "").lower(),
-            device.get("name", "").lower(),
-            device.get("name", "").split('.')[0].lower() if device.get("name") else "",
-        ]
-        if ident in names:
-            return device
-    return None
-
 def _build_settings_dict():
     """Build a redacted settings dictionary for optional UI display."""
     # Determine rate-limit backend descriptor
@@ -1016,97 +1003,36 @@ def _build_settings_dict():
         "RATE_LIMIT_BACKEND": rl_backend,
     }
 
+# The routes below serve the React (shadcn/ui) dashboard shell only. All
+# data fetching, filtering, and error handling happens client-side against
+# the JSON API (/health, /keys, /health/<identifier>) below - these routes
+# intentionally do not touch the Tailscale API themselves, so a slow/failing
+# upstream never prevents the app shell from loading.
 @app.route('/', methods=['GET'])
 @app.route('/dashboard', methods=['GET'])
 @_apply_limits
 def ui_dashboard():
-    """Render the web dashboard with summary metrics and device list.
+    return render_template('dashboard.html')
 
-    Server-renders data and includes a small JS to enable client-side
-    search/filtering and export to CSV/JSON.
-    """
-    try:
-        # Fetch devices first so cache is populated for meta display
-        devices = fetch_devices()
-        health_list, metrics = _compute_health_summary(devices)
-        cache_meta = _get_cache_meta("devices")
-        key_list, key_metrics = _get_tailnet_keys_status_safe()
-        keys_cache_meta = (
-            _get_cache_meta("tailnet_keys")
-            if key_metrics["tailnet_configured"] and not key_metrics.get("keys_error")
-            else None
-        )
-        settings = _build_settings_dict()
-        # Load time in configured timezone
-        try:
-            tz = pytz.timezone(TIMEZONE)
-        except pytz.UnknownTimeZoneError:
-            tz = pytz.UTC
-        loaded_at = datetime.now(tz)
-        loaded_at_human = loaded_at.strftime('%Y-%m-%d %H:%M:%S %Z')
-        loaded_at_iso = cache_meta.get("loaded_at_iso") or loaded_at.isoformat()
-        # Unique OS and tag options for filters
-        os_values = sorted({d.get("os", "") for d in health_list if d.get("os")})
-        tag_values = sorted({tag for d in health_list for tag in (d.get("tags") or [])})
-        return render_template(
-            'dashboard.html',
-            devices=health_list,
-            metrics=metrics,
-            os_values=os_values,
-            tag_values=tag_values,
-            show_settings=DISPLAY_SETTINGS_IN_OUTPUT,
-            settings=settings if DISPLAY_SETTINGS_IN_OUTPUT else None,
-            cache_meta=cache_meta,
-            loaded_at=loaded_at_iso,
-            loaded_at_human=loaded_at_human,
-            keys=key_list,
-            key_metrics=key_metrics,
-            keys_cache_meta=keys_cache_meta,
-        )
-    except ValueError as ve:
-        return render_template('error.html', message=str(ve)), 400
-    except requests.exceptions.Timeout as e:
-        logging.warning(f"Timeout rendering dashboard: {e}")
-        return render_template('error.html', message="Request to external API timed out"), 504
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"Upstream Tailscale API error rendering dashboard: {e}")
-        payload, status = _upstream_error_payload(e)
-        return render_template('error.html', message=f"Tailscale API error ({status}): {payload['error']}"), status
-    except Exception as e:
-        logging.error(f"Error rendering dashboard: {e}")
-        return render_template('error.html', message="Unexpected server error"), 500
+@app.route('/devices', methods=['GET'])
+@_apply_limits
+def ui_devices():
+    return render_template('devices.html')
+
+@app.route('/tailnet-keys', methods=['GET'])
+@_apply_limits
+def ui_tailnet_keys():
+    return render_template('tailnet_keys.html')
+
+@app.route('/debug', methods=['GET'])
+@_apply_limits
+def ui_debug():
+    return render_template('debug.html')
 
 @app.route('/device/<string:identifier>', methods=['GET'])
 @_apply_limits
 def ui_device_detail(identifier: str):
-    """Render a device detail page with safe fields only."""
-    try:
-        devices = fetch_devices()
-        device = _find_device_by_identifier(identifier, devices)
-        if not device:
-            # Use UI 404 for unknown device
-            return render_template("404.html", error_title="Device Not Found", payload={"error": "Not Found", "status": 404}), 404
-
-        # Reuse summary computation for a single device
-        summary_list, _ = _compute_health_summary([device])
-        detail = summary_list[0] if summary_list else None
-        if not detail:
-            return render_template("404.html", error_title="Device Not Found", payload={"error": "Not Found", "status": 404}), 404
-
-        # Render detail view; do not expose sensitive API data
-        return render_template('device_detail.html', device=detail)
-    except ValueError as ve:
-        return render_template('error.html', message=str(ve)), 400
-    except requests.exceptions.Timeout as e:
-        logging.warning(f"Timeout rendering device detail: {e}")
-        return render_template('error.html', message="Request to external API timed out"), 504
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"Upstream Tailscale API error rendering device detail: {e}")
-        payload, status = _upstream_error_payload(e)
-        return render_template('error.html', message=f"Tailscale API error ({status}): {payload['error']}"), status
-    except Exception as e:
-        logging.error(f"Error rendering device detail: {e}")
-        return render_template('error.html', message="Unexpected server error"), 500
+    return render_template('device_detail.html')
 
 def should_include_device(device):
     """
@@ -1255,6 +1181,7 @@ def health_check():
         response = {
             "devices": health_status,
             "metrics": metrics,
+            "cache_meta": _get_cache_meta("devices"),
         }
 
         if DISPLAY_SETTINGS_IN_OUTPUT:
@@ -1294,6 +1221,9 @@ def keys_status():
             "keys": key_status,
             "metrics": metrics,
         }
+
+        if metrics.get("tailnet_configured") and not metrics.get("keys_error"):
+            response["cache_meta"] = _get_cache_meta("tailnet_keys")
 
         if DISPLAY_SETTINGS_IN_OUTPUT:
             response["settings"] = _build_settings_dict()

@@ -22,6 +22,11 @@ build/
 dist/
 *.egg-info/
 
+# Frontend (React/shadcn dashboard)
+frontend/node_modules/
+frontend/dist/
+static/app/
+
 # Coverage and reports
 .coverage
 .coverage.*
