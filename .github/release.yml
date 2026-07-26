@@ -1,0 +1,26 @@
+# Configures the categorized sections GitHub's auto-generated release notes
+# use (via repos.generateReleaseNotes, called from .github/workflows/release.yaml).
+# PRs are sorted into a section by label; label a PR "breaking-change" to have
+# it called out under its own heading instead of blending into the general list.
+changelog:
+  categories:
+    - title: "⚠️ Breaking Changes"
+      labels:
+        - breaking-change
+    - title: "🚀 Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "🔒 Security"
+      labels:
+        - security
+    - title: "📦 Dependencies"
+      labels:
+        - dependencies
+    - title: "🧹 Other Changes"
+      labels:
+        - "*"
