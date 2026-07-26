@@ -2,6 +2,7 @@ import type { SettingsResponse } from '@/lib/types'
 
 export type AdminStatus = {
   tailnet_configured: boolean
+  auth_configured: boolean
   has_users: boolean
   authenticated: boolean
   version: string

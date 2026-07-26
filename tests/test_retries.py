@@ -48,6 +48,36 @@ def test_authenticated_request_retries_bounded(monkeypatch):
     assert calls["count"] == 3
 
 
+def test_max_retries_zero_still_makes_one_attempt(monkeypatch, tmp_path):
+    # MAX_RETRIES=0 (allowed by both the settings UI and backend validation)
+    # must mean "no extra retries," not "make zero requests" - range(1, 0+1)
+    # is empty, so without clamping, every poll would fail unconditionally
+    # with no HTTP request ever attempted.
+    module = _load_healthcheck_with_env({
+        "MAX_RETRIES": "0",
+        "BACKOFF_BASE_SECONDS": "0",
+        "BACKOFF_JITTER_SECONDS": "0",
+        "DATABASE_PATH": str(tmp_path / "healthcheck.db"),
+    })
+
+    calls = {"count": 0}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(*_a, **_kw):
+        calls["count"] += 1
+        return FakeResponse()
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+
+    module.make_authenticated_request("https://example.invalid", {"Authorization": "Bearer x"})
+    assert calls["count"] == 1
+
+
 def test_exponential_backoff_called_between_attempts(monkeypatch):
     module = _load_healthcheck_with_env({
         "MAX_RETRIES": "3",

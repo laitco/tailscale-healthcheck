@@ -78,9 +78,12 @@ ENV GUNICORN_GRACEFUL_TIMEOUT=120
 # Define environment variable for Flask
 ENV FLASK_APP=healthcheck.py
 
-# Add a health check to verify the container is running
+# Add a health check to verify the container is running. If HEALTH_ENDPOINT_TOKEN
+# is set via env, it's forwarded here too - if it's only set via /admin/settings
+# (not an env var), this probe will start failing once that's turned on, since
+# the token is a DB-only secret this container-local check has no way to read.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+    CMD curl -f -H "X-Health-Token: ${HEALTH_ENDPOINT_TOKEN}" http://localhost:$PORT/health || exit 1
 
 # Container starts as root so the entrypoint can fix /data ownership for
 # arbitrary bind mounts, then drops to appuser via gosu before exec'ing gunicorn.

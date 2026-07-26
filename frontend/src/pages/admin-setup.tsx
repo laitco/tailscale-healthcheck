@@ -25,7 +25,9 @@ export default function AdminSetupPage() {
   useEffect(() => {
     fetchAdminStatus()
       .then(setStatus)
-      .catch(() => setStatus({ tailnet_configured: false, has_users: false, authenticated: false, version: 'unknown' }))
+      .catch(() =>
+        setStatus({ tailnet_configured: false, auth_configured: false, has_users: false, authenticated: false, version: 'unknown' }),
+      )
   }, [])
 
   if (!status) {
@@ -36,7 +38,8 @@ export default function AdminSetupPage() {
     )
   }
 
-  const needsConnection = !status.tailnet_configured
+  const needsTailnetDomain = !status.tailnet_configured
+  const needsConnection = needsTailnetDomain || !status.auth_configured
   const needsUser = !status.has_users
 
   async function onSubmit(e: React.FormEvent) {
@@ -100,18 +103,24 @@ export default function AdminSetupPage() {
             <legend className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Tailscale connection
             </legend>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="tailnet_domain">
-                Tailnet domain
-              </label>
-              <Input
-                id="tailnet_domain"
-                placeholder="your-tailnet.ts.net"
-                value={tailnetDomain}
-                onChange={(e) => setTailnetDomain(e.target.value)}
-                required
-              />
-            </div>
+            {needsTailnetDomain ? (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground" htmlFor="tailnet_domain">
+                  Tailnet domain
+                </label>
+                <Input
+                  id="tailnet_domain"
+                  placeholder="your-tailnet.ts.net"
+                  value={tailnetDomain}
+                  onChange={(e) => setTailnetDomain(e.target.value)}
+                  required
+                />
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Tailnet domain is already configured via environment variable - just add credentials below.
+              </p>
+            )}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Authentication method</label>
               <Select value={authMode} onValueChange={(v) => setAuthMode(v as 'token' | 'oauth')}>

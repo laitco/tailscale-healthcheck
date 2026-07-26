@@ -12,7 +12,7 @@ import { fetchSettings, updateSettings, pollNow, generateToken, AdminApiError } 
 import { useHealthContext } from '@/lib/health-context'
 import type { SettingField, SettingsResponse } from '@/lib/types'
 
-type FieldDef = { name: string; label: string; unit?: string; generatable?: boolean }
+type FieldDef = { name: string; label: string; unit?: string; help?: string; generatable?: boolean }
 
 const GROUP_ORDER = ['connection', 'thresholds', 'filters', 'general', 'logging', 'rate_limit', 'retry', 'poll'] as const
 
@@ -51,10 +51,30 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
     { name: 'online_threshold_minutes', label: 'Online threshold', unit: 'minutes' },
     { name: 'key_threshold_minutes', label: 'Key threshold', unit: 'minutes' },
     { name: 'key_expiry_warning_days', label: 'Key expiry warning', unit: 'days' },
-    { name: 'global_healthy_threshold', label: 'Global healthy threshold', unit: '%' },
-    { name: 'global_online_healthy_threshold', label: 'Global online-healthy threshold', unit: '%' },
-    { name: 'global_key_healthy_threshold', label: 'Global key-healthy threshold', unit: '%' },
-    { name: 'global_update_healthy_threshold', label: 'Global update-healthy threshold', unit: '%' },
+    {
+      name: 'global_healthy_threshold',
+      label: 'Global healthy threshold',
+      unit: 'devices (count, not %)',
+      help: 'Max number of unhealthy devices tolerated before global_healthy flips to false.',
+    },
+    {
+      name: 'global_online_healthy_threshold',
+      label: 'Global online-healthy threshold',
+      unit: 'devices (count, not %)',
+      help: 'Max number of offline devices tolerated before global_online_healthy flips to false.',
+    },
+    {
+      name: 'global_key_healthy_threshold',
+      label: 'Global key-healthy threshold',
+      unit: 'devices (count, not %)',
+      help: 'Max number of devices with an expiring key tolerated before global_key_healthy flips to false.',
+    },
+    {
+      name: 'global_update_healthy_threshold',
+      label: 'Global update-healthy threshold',
+      unit: 'devices (count, not %)',
+      help: 'Max number of devices with an update available tolerated before global_update_healthy flips to false.',
+    },
     { name: 'update_healthy_is_included_in_health', label: 'Include update health in overall health' },
   ],
   filters: [
@@ -331,6 +351,7 @@ export default function AdminSettingsPage() {
         <SettingLabel label={def.label} htmlFor={id} meta={meta} />
         {control}
         {def.unit && <p className="text-[0.7rem] text-muted-foreground">Unit: {def.unit}</p>}
+        {def.help && <p className="text-[0.7rem] text-muted-foreground">{def.help}</p>}
       </div>
     )
   }

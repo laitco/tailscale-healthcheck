@@ -98,6 +98,50 @@ def test_db_sourced_setting_survives_across_boots(tmp_path):
     assert dbstore.get_setting("tailnet_domain") == "wizard-set.ts.net"
 
 
+def test_secret_setting_changes_are_redacted_in_audit_log(tmp_path):
+    _fresh_db(tmp_path)
+    dbstore.set_setting("auth_token", "super-secret-value", source="db")
+    dbstore.set_setting("oauth_client_secret", "another-secret", source="db")
+    dbstore.set_setting("tailnet_domain", "wizard-set.ts.net", source="db")  # non-secret control case
+
+    entries = {e["entity_id"]: e for e in dbstore.list_audit_log(entity_type="setting")}
+    assert entries["auth_token"]["changes"]["new"] == "[redacted]"
+    assert entries["auth_token"]["changes"]["old"] is None
+    assert entries["oauth_client_secret"]["changes"]["new"] == "[redacted]"
+    assert entries["tailnet_domain"]["changes"]["new"] == "wizard-set.ts.net"  # not a secret, stays plaintext
+
+    # And the raw audit_log table itself must never contain the plaintext value.
+    with dbstore.get_connection() as conn:
+        raw = "\n".join(r["changes"] for r in conn.execute("SELECT changes FROM audit_log"))
+    assert "super-secret-value" not in raw
+    assert "another-secret" not in raw
+
+
+def test_login_rate_limit_blocks_after_threshold(tmp_path):
+    _fresh_db(tmp_path)
+    for _ in range(dbstore.LOGIN_RATE_LIMIT_ATTEMPTS):
+        assert dbstore.check_login_rate_limit("1.2.3.4") is True
+    assert dbstore.check_login_rate_limit("1.2.3.4") is False
+    # A different IP has its own independent counter.
+    assert dbstore.check_login_rate_limit("5.6.7.8") is True
+
+
+def test_recovery_code_cannot_be_consumed_twice_even_racing_the_check(tmp_path):
+    # Simulates the race directly at the storage layer: two "concurrent"
+    # attempts to claim the same still-unused row must not both succeed.
+    _fresh_db(tmp_path)
+    dbstore.create_user("racer", "correct-horse-battery-staple")
+    from werkzeug.security import generate_password_hash
+    with dbstore.get_connection() as conn:
+        user_id = conn.execute("SELECT id FROM users WHERE username = 'racer'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO user_recovery_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)",
+            (user_id, generate_password_hash("abc123"), "2024-01-01T00:00:00+00:00"),
+        )
+    assert dbstore.verify_recovery_code("racer", "abc123") is True
+    assert dbstore.verify_recovery_code("racer", "abc123") is False
+
+
 def _device(device_id, name="dev1.example.com", **overrides):
     base = {
         "id": device_id,

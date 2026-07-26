@@ -28,6 +28,7 @@ export default defineConfig({
     proxy: {
       '/health': 'http://localhost:5000',
       '/keys': 'http://localhost:5000',
+      '/admin': 'http://localhost:5000',
     },
   },
 })

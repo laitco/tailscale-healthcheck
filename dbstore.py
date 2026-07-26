@@ -10,6 +10,7 @@ import json
 import secrets
 import sqlite3
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -122,6 +123,13 @@ DEVICE_AUDIT_FIELDS = (
     "update_available", "key_expiry_disabled", "expires", "connected_to_control",
 )
 KEY_AUDIT_FIELDS = ("description", "key_type", "capabilities", "expires")
+
+# Settings whose values must never be written to audit_log (or shown) in
+# plaintext - credentials and secrets. admin.py's MASKED_SETTINGS (what's
+# shown as masked in the settings UI) is derived from this same set, so
+# there's one source of truth for "this is a secret".
+SECRET_SETTINGS = {"auth_token", "oauth_client_secret", "health_endpoint_token", "secret_key"}
+_REDACTED = "[redacted]"
 
 _DEFAULT_DB_PATH = "/data/healthcheck.db"
 
@@ -294,6 +302,16 @@ def init_db():
                 used_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_user_recovery_codes_user_id ON user_recovery_codes(user_id);
+
+            -- Fixed-window per-IP counter guarding /admin/api/login and
+            -- /admin/api/login/mfa against brute-force, independent of the
+            -- general-purpose request rate limiter (which the login routes
+            -- are otherwise not specifically bound by).
+            CREATE TABLE IF NOT EXISTS login_rate_limit (
+                ip TEXT PRIMARY KEY,
+                window_start INTEGER NOT NULL,
+                count INTEGER NOT NULL
+            );
             """
         )
         # users table predates totp_secret/totp_enabled - add them for
@@ -324,7 +342,12 @@ def _db_get_setting_row(conn, name):
 
 
 def set_setting(name: str, value, source: str = "db", actor: str = None):
-    """Upsert a setting, writing an audit row only when the value actually changes."""
+    """Upsert a setting, writing an audit row only when the value actually changes.
+
+    Secret settings (SECRET_SETTINGS) are never written to the audit trail in
+    plaintext - old/new values are redacted, only the fact that a change
+    happened (and its source) is recorded.
+    """
     with get_connection() as conn:
         existing = _db_get_setting_row(conn, name)
         old_value = existing["value"] if existing else None
@@ -335,10 +358,15 @@ def set_setting(name: str, value, source: str = "db", actor: str = None):
                 "updated_at=excluded.updated_at",
                 (name, value, source, _now_iso()),
             )
+            if name in SECRET_SETTINGS:
+                audited_old = _REDACTED if old_value else None
+                audited_new = _REDACTED if value else None
+            else:
+                audited_old, audited_new = old_value, value
             _add_audit(
                 conn, "setting", name,
                 "created" if existing is None else "updated",
-                {"old": old_value, "new": value, "source": source},
+                {"old": audited_old, "new": audited_new, "source": source},
                 actor=actor,
             )
         else:
@@ -505,6 +533,17 @@ def is_tailnet_configured() -> bool:
     return bool(value) and value.strip().lower() != "example.com"
 
 
+def is_auth_configured() -> bool:
+    """True if there's a usable static token or a complete OAuth pair.
+
+    Used alongside is_tailnet_configured() to gate setup completeness -
+    a tailnet domain alone isn't enough to actually reach the Tailscale API.
+    """
+    if get_setting("auth_token"):
+        return True
+    return bool(get_setting("oauth_client_id")) and bool(get_setting("oauth_client_secret"))
+
+
 def get_secret_key() -> str:
     env_value = os.getenv("SECRET_KEY", "").strip()
     if env_value:
@@ -624,6 +663,36 @@ def verify_password(username: str, password: str):
     return user
 
 
+LOGIN_RATE_LIMIT_ATTEMPTS = 10
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+
+
+def check_login_rate_limit(
+    ip: str, limit: int = LOGIN_RATE_LIMIT_ATTEMPTS, window_seconds: int = LOGIN_RATE_LIMIT_WINDOW_SECONDS
+) -> bool:
+    """Fixed-window per-IP counter for login attempts. Returns True (and
+    increments the counter) if this attempt is allowed, False if the IP has
+    already hit `limit` attempts within the current window. Independent of
+    the general request rate limiter, which the login routes need regardless
+    of whether Flask-Limiter/file-based limiting is enabled or configured."""
+    now = int(time.time())
+    window_start = now - (now % window_seconds)
+    ip = ip or "unknown"
+    with get_connection() as conn:
+        row = conn.execute("SELECT window_start, count FROM login_rate_limit WHERE ip = ?", (ip,)).fetchone()
+        if row is None or row["window_start"] != window_start:
+            conn.execute(
+                "INSERT INTO login_rate_limit (ip, window_start, count) VALUES (?, ?, 1) "
+                "ON CONFLICT(ip) DO UPDATE SET window_start = excluded.window_start, count = 1",
+                (ip, window_start),
+            )
+            return True
+        if row["count"] >= limit:
+            return False
+        conn.execute("UPDATE login_rate_limit SET count = count + 1 WHERE ip = ?", (ip,))
+        return True
+
+
 def touch_last_login(user_id: int):
     with get_connection() as conn:
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now_iso(), user_id))
@@ -736,11 +805,17 @@ def verify_recovery_code(username: str, code: str) -> bool:
         ).fetchall()
         for row in rows:
             if check_password_hash(row["code_hash"], code.strip()):
-                conn.execute(
-                    "UPDATE user_recovery_codes SET used_at = ? WHERE id = ?",
+                # Condition the UPDATE on used_at still being NULL and check
+                # rowcount, so this is an atomic claim rather than a
+                # read-then-write race: two concurrent requests submitting
+                # the same valid code could otherwise both pass the SELECT
+                # above (used_at still NULL for both) and both return
+                # success, defeating "one-time" recovery codes entirely.
+                cur = conn.execute(
+                    "UPDATE user_recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL",
                     (_now_iso(), row["id"]),
                 )
-                return True
+                return cur.rowcount == 1
     return False
 
 

@@ -109,6 +109,17 @@ def run_poll_cycle():
     _record("poll_started", "Poll cycle starting.")
     import healthcheck  # deferred: avoids circular import at module load time
 
+    have_access_token = getattr(healthcheck, "ACCESS_TOKEN", None)
+    oauth_configured = dbstore.get_setting("oauth_client_id") and dbstore.get_setting("oauth_client_secret")
+    if not have_access_token and oauth_configured:
+        # ACCESS_TOKEN is per-process; if OAuth creds became configured via
+        # the settings UI (handled by a different worker process than this
+        # one) while a still-working static token meant no 401 ever occurred
+        # to trigger the usual retry-driven fetch, self-heal here instead -
+        # this runs in the one process that actually owns polling, so it's
+        # process-correct regardless of which worker persisted the setting.
+        healthcheck.fetch_oauth_token()
+
     tailnet_domain = dbstore.get_setting("tailnet_domain")
     devices_url = f"https://api.tailscale.com/api/v2/tailnet/{tailnet_domain}/devices"
     keys_url = f"https://api.tailscale.com/api/v2/tailnet/{tailnet_domain}/keys?all=true"

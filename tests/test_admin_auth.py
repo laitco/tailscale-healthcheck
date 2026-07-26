@@ -38,6 +38,15 @@ def configured(tmp_path):
     return m
 
 
+@pytest.fixture
+def tailnet_only(tmp_path):
+    # Tailnet domain set via env, but no AUTH_TOKEN/OAuth - the scenario
+    # that used to let the setup wizard report "complete" without ever
+    # asking for credentials (see test_setup_requires_usable_auth_method).
+    m = _load_healthcheck({"RATE_LIMIT_ENABLED": "NO", "TAILNET_DOMAIN": "example.ts.net"}, tmp_path / "healthcheck.db")
+    return m
+
+
 def test_setup_redirect_when_tailnet_unconfigured(unconfigured):
     client = unconfigured.app.test_client()
     resp = client.get("/dashboard")
@@ -100,6 +109,53 @@ def test_wizard_completes_connection_and_user_in_one_call(unconfigured, monkeypa
     assert unconfigured.dbstore.is_tailnet_configured()
     assert unconfigured.dbstore.has_any_user()
     assert unconfigured.dbstore.get_setting_meta("tailnet_domain")["source"] == "db"
+
+
+def test_setup_requires_usable_auth_method(tailnet_only, monkeypatch):
+    # Tailnet domain is already configured via env, but no auth method is.
+    # Setup must still be reported incomplete, and the wizard must still
+    # accept/require credentials here rather than skipping straight to just
+    # creating a user (which used to silently "complete" setup with no way
+    # to ever reach the Tailscale API).
+    m = tailnet_only
+    assert not m.dbstore.is_auth_configured()
+
+    client = m.app.test_client()
+    status = client.get("/admin/api/status").get_json()
+    assert status["tailnet_configured"] is True
+    assert status["auth_configured"] is False
+
+    # Trying to jump straight to just creating a user, omitting credentials
+    # entirely, must be rejected.
+    resp = client.post("/admin/api/setup", json={"username": "admin", "password": "correct-horse-battery-staple"})
+    assert resp.status_code == 400
+    assert not m.dbstore.has_any_user()
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"devices": []}
+
+    monkeypatch.setattr(m.requests, "get", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(m.poller, "run_poll_cycle", lambda: None)
+
+    # Supplying the auth token (tailnet_domain omitted - it's already known)
+    # completes the connection step and lets the wizard proceed.
+    resp = client.post("/admin/api/setup", json={
+        "auth_mode": "token",
+        "auth_token": "test-token",
+        "username": "admin",
+        "password": "correct-horse-battery-staple",
+    })
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["setup_complete"] is True
+    assert m.dbstore.is_auth_configured()
+    assert m.dbstore.get_setting("tailnet_domain") == "example.ts.net"
 
 
 def test_login_logout_flow(configured):
@@ -186,6 +242,22 @@ def test_json_api_family_is_public(configured, monkeypatch):
     assert client.get("/dashboard").status_code == 302
 
 
+def test_admin_api_returns_json_401_when_logged_out(configured):
+    # A logged-out (or session-expired) fetch() call to /admin/api/* must
+    # get a JSON 401, not Flask-Login's default redirect to the HTML login
+    # page - the SPA can't meaningfully handle a 200 HTML response where it
+    # expected JSON.
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    resp = client.get("/admin/api/users")
+    assert resp.status_code == 401
+    assert resp.get_json() == {"error": "Unauthorized"}
+
+    # The HTML shell routes still redirect, for normal browser navigation.
+    page_resp = client.get("/admin/users")
+    assert page_resp.status_code == 302
+
+
 def test_health_endpoint_token_via_env(tmp_path, monkeypatch):
     m = _load_healthcheck(
         {
@@ -258,6 +330,23 @@ def test_settings_api_updates_non_core_setting(configured):
     assert bad.status_code == 400
 
 
+def test_settings_batch_update_is_all_or_nothing(configured):
+    # A payload with one valid field and one invalid field must not persist
+    # the valid field before failing on the invalid one - the whole request
+    # is a single unit from the caller's point of view.
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    original = configured.dbstore.get_setting_typed("online_threshold_minutes")
+    resp = client.post("/admin/api/settings", json={
+        "online_threshold_minutes": 42,
+        "key_threshold_minutes": "not-a-number",
+    })
+    assert resp.status_code == 400
+    assert configured.dbstore.get_setting_typed("online_threshold_minutes") == original
+
+
 def test_key_filters_narrow_keys_summary(configured):
     configured.dbstore.set_setting("include_key_type", "auth", source="db")
     keys = [
@@ -281,9 +370,18 @@ def test_health_endpoint_token_via_admin_settings(configured, monkeypatch):
     resp = client.post("/admin/api/settings", json={"health_endpoint_token": "db-set-token"})
     assert resp.status_code == 200
 
-    assert client.get("/health").status_code == 401
-    assert client.get("/health", headers={"X-Health-Token": "db-set-token"}).status_code == 200
+    # A logged-in dashboard session bypasses the token check - the token
+    # value is a masked secret the frontend never sees, so without this the
+    # app's own Overview/Devices pages would break the moment this optional
+    # feature is turned on.
+    assert client.get("/health").status_code == 200
+
+    # A separate, unauthenticated client is the one the token actually guards.
+    anon = configured.app.test_client()
+    assert anon.get("/health").status_code == 401
+    assert anon.get("/health", headers={"X-Health-Token": "db-set-token"}).status_code == 200
+    assert anon.get("/health", headers={"X-Health-Token": "wrong"}).status_code == 401
 
     # Clearing it back to empty re-opens /health.
     client.post("/admin/api/settings", json={"health_endpoint_token": ""})
-    assert client.get("/health").status_code == 200
+    assert anon.get("/health").status_code == 200

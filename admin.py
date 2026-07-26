@@ -41,7 +41,7 @@ def _read_app_version() -> str:
 
 APP_VERSION = _read_app_version()
 
-MASKED_SETTINGS = {"auth_token", "oauth_client_secret", "health_endpoint_token"}
+MASKED_SETTINGS = dbstore.SECRET_SETTINGS
 
 # Settings that require a process restart to take effect even after being
 # saved to the DB, because they're read once at Flask app / logging setup
@@ -72,7 +72,7 @@ def _setting_field(name):
 
 
 def _setup_incomplete() -> bool:
-    return not dbstore.is_tailnet_configured() or not dbstore.has_any_user()
+    return not dbstore.is_tailnet_configured() or not dbstore.is_auth_configured() or not dbstore.has_any_user()
 
 
 def _validate_tailscale_credentials(tailnet_domain: str, auth_header: dict):
@@ -149,6 +149,7 @@ def api_docs_page():
 def api_status():
     return jsonify({
         "tailnet_configured": dbstore.is_tailnet_configured(),
+        "auth_configured": dbstore.is_auth_configured(),
         "has_users": dbstore.has_any_user(),
         "authenticated": current_user.is_authenticated,
         "version": APP_VERSION,
@@ -163,11 +164,20 @@ def api_setup():
     data = request.get_json(silent=True) or {}
     response = {}
 
-    if not dbstore.is_tailnet_configured():
-        tailnet_domain = str(data.get("tailnet_domain", "")).strip()
+    tailnet_needs_input = not dbstore.is_tailnet_configured()
+    auth_needs_input = not dbstore.is_auth_configured()
+    if tailnet_needs_input or auth_needs_input:
+        if tailnet_needs_input:
+            tailnet_domain = str(data.get("tailnet_domain", "")).strip()
+            if not tailnet_domain or tailnet_domain.lower() == "example.com":
+                return jsonify({"error": "A valid tailnet domain is required"}), 400
+        else:
+            # Tailnet domain is already configured (e.g. via env) - only
+            # auth is still missing, so reuse the effective value instead of
+            # requiring the wizard to resubmit it.
+            tailnet_domain = dbstore.get_setting("tailnet_domain")
+
         auth_mode = str(data.get("auth_mode", "")).strip().lower()
-        if not tailnet_domain or tailnet_domain.lower() == "example.com":
-            return jsonify({"error": "A valid tailnet domain is required"}), 400
 
         if auth_mode == "oauth":
             client_id = str(data.get("oauth_client_id", "")).strip()
@@ -186,7 +196,8 @@ def api_setup():
             except Exception as e:
                 logging.warning(f"Setup wizard: OAuth credential validation failed: {e}")
                 return jsonify({"error": "Could not authenticate to the Tailscale API with the provided OAuth credentials"}), 400
-            dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
+            if tailnet_needs_input:
+                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
             dbstore.set_setting("oauth_client_id", client_id, source="db")
             dbstore.set_setting("oauth_client_secret", client_secret, source="db")
         elif auth_mode == "token":
@@ -198,7 +209,8 @@ def api_setup():
             except Exception as e:
                 logging.warning(f"Setup wizard: token credential validation failed: {e}")
                 return jsonify({"error": "Could not authenticate to the Tailscale API with the provided token"}), 400
-            dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
+            if tailnet_needs_input:
+                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
             dbstore.set_setting("auth_token", auth_token, source="db")
         else:
             return jsonify({"error": "auth_mode must be 'token' or 'oauth'"}), 400
@@ -231,6 +243,8 @@ def api_setup():
 
 @admin_bp.route("/api/login", methods=["POST"])
 def api_login():
+    if not dbstore.check_login_rate_limit(request.remote_addr):
+        return jsonify({"error": "Too many login attempts. Try again later."}), 429
     # Login only needs a user to exist - it shouldn't be blocked just because
     # the tailnet connection itself isn't configured yet (that's editable
     # from /admin/settings once logged in).
@@ -258,6 +272,8 @@ def api_login():
 
 @admin_bp.route("/api/login/mfa", methods=["POST"])
 def api_login_mfa():
+    if not dbstore.check_login_rate_limit(request.remote_addr):
+        return jsonify({"error": "Too many login attempts. Try again later."}), 429
     pending_id = session.get("mfa_pending_user_id")
     user_row = dbstore.get_user_by_id(pending_id) if pending_id else None
     if not user_row:
@@ -379,7 +395,12 @@ def api_get_settings():
 @login_required
 def api_update_settings():
     data = request.get_json(silent=True) or {}
-    updated = []
+
+    # Validate the entire payload before writing anything, so a bad or
+    # env-locked field later in the payload can't leave earlier fields
+    # already persisted while the request as a whole reports failure -
+    # this is all-or-nothing from the caller's point of view.
+    encoded_values = {}
     for name, raw_value in data.items():
         if name not in dbstore.SETTINGS_REGISTRY:
             return jsonify({"error": f"Unknown setting: {name}"}), 400
@@ -387,9 +408,12 @@ def api_update_settings():
         if meta.get("source") == "env":
             return jsonify({"error": f"{name} is set via an environment variable and cannot be changed here"}), 409
         try:
-            encoded = dbstore.validate_setting_value(name, raw_value)
+            encoded_values[name] = dbstore.validate_setting_value(name, raw_value)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+
+    updated = []
+    for name, encoded in encoded_values.items():
         dbstore.set_setting(name, encoded, source="db", actor=current_user.username)
         updated.append(name)
 

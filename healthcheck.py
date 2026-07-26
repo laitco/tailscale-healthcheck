@@ -443,7 +443,10 @@ def make_authenticated_request(url, headers):
     restart.
     """
     retry_cfg = dbstore.get_settings_typed(RETRY_BACKOFF_SETTINGS)
-    max_retries = int(retry_cfg["max_retries"])
+    # Clamp to at least 1: MAX_RETRIES=0 must mean "no extra retries, still
+    # make the one request" - range(1, 0+1) would otherwise be empty and no
+    # HTTP request would happen at all, failing every poll unconditionally.
+    max_retries = max(1, int(retry_cfg["max_retries"]))
     backoff_base = retry_cfg["backoff_base_seconds"]
     backoff_max = retry_cfg["backoff_max_seconds"]
     backoff_jitter = retry_cfg["backoff_jitter_seconds"]
@@ -990,9 +993,16 @@ def _health_endpoint_token_ok() -> bool:
     default, for existing monitoring integrations (Gatus, etc.). Setting
     HEALTH_ENDPOINT_TOKEN (env or via /admin/settings) locks it behind a
     shared-secret header instead, without requiring a login session.
+
+    A logged-in dashboard session also satisfies the check: the token value
+    is a masked secret the frontend never sees, so without this the app's
+    own Overview/Devices pages (which fetch /health directly) would break
+    for logged-in users the moment this optional feature is turned on.
     """
     configured_token = dbstore.get_setting("health_endpoint_token")
     if not configured_token:
+        return True
+    if current_user.is_authenticated:
         return True
     provided = request.headers.get("X-Health-Token", "")
     return hmac.compare_digest(provided, configured_token)
@@ -1503,3 +1513,16 @@ if __name__ == '__main__':
     dbstore.init_db()
     poller.start()
     app.run(host='0.0.0.0', port=PORT)
+elif os.environ.get("FLASK_RUN_FROM_CLI") == "true":
+    # `flask run` never hits __name__ == '__main__' (Flask's CLI imports this
+    # module directly via FLASK_APP), so without this the poller would never
+    # start under the documented local-dev workflow and /health would stay
+    # empty forever. Gunicorn's own worker startup (gunicorn_config.py's
+    # post_fork hook) already calls poller.start() itself - this branch is
+    # specifically for the Flask CLI case and must not also fire there, since
+    # gunicorn_config.py imports this module in the master process before
+    # forking, and starting the poller pre-fork would have every forked
+    # worker inherit the same already-acquired lock/timer state. Gunicorn
+    # never sets FLASK_RUN_FROM_CLI, so this is safe.
+    dbstore.init_db()
+    poller.start()
