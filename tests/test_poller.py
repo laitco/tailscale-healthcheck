@@ -116,6 +116,59 @@ def test_poll_cycle_skips_when_auth_unconfigured(tmp_path, monkeypatch):
     assert dbstore.list_poller_log() == []
 
 
+def test_oauth_token_refetched_when_client_id_changes(tmp_path, monkeypatch):
+    # A cached ACCESS_TOKEN for an OLD oauth_client_id must not silently
+    # keep being used after credentials are replaced via the settings UI -
+    # only comparing "is there a token at all" (not which client it's for)
+    # would miss this, since the stale token is still truthy.
+    _fresh_db(tmp_path, monkeypatch)
+    dbstore.set_setting("oauth_client_id", "new-client", source="db")
+    dbstore.set_setting("oauth_client_secret", "new-secret", source="db")
+
+    fake = _fake_healthcheck_module([], [])
+    fetch_calls = {"count": 0}
+
+    def fake_fetch_oauth_token():
+        fetch_calls["count"] += 1
+        fake.ACCESS_TOKEN = "new-token"
+        fake.ACCESS_TOKEN_CLIENT_ID = "new-client"
+
+    fake.fetch_oauth_token = fake_fetch_oauth_token
+    fake.ACCESS_TOKEN = "stale-token-from-old-client"
+    fake.ACCESS_TOKEN_CLIENT_ID = "old-client"
+
+    sys.modules["healthcheck"] = fake
+    try:
+        poller.run_poll_cycle()
+    finally:
+        sys.modules.pop("healthcheck", None)
+
+    assert fetch_calls["count"] == 1
+    assert fake.ACCESS_TOKEN_CLIENT_ID == "new-client"
+
+
+def test_oauth_token_not_refetched_when_client_id_unchanged(tmp_path, monkeypatch):
+    # The self-heal must not force a needless re-fetch every cycle once a
+    # valid, current token is already cached.
+    _fresh_db(tmp_path, monkeypatch)
+    dbstore.set_setting("oauth_client_id", "same-client", source="db")
+    dbstore.set_setting("oauth_client_secret", "same-secret", source="db")
+
+    fake = _fake_healthcheck_module([], [])
+    fetch_calls = {"count": 0}
+    fake.fetch_oauth_token = lambda: fetch_calls.__setitem__("count", fetch_calls["count"] + 1)
+    fake.ACCESS_TOKEN = "current-token"
+    fake.ACCESS_TOKEN_CLIENT_ID = "same-client"
+
+    sys.modules["healthcheck"] = fake
+    try:
+        poller.run_poll_cycle()
+    finally:
+        sys.modules.pop("healthcheck", None)
+
+    assert fetch_calls["count"] == 0
+
+
 def test_is_auth_error_detects_401_403_only():
     resp_401 = types.SimpleNamespace(status_code=401)
     resp_500 = types.SimpleNamespace(status_code=500)

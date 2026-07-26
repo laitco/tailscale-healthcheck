@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchHealth, fetchKeys, invalidateCache } from '@/lib/api'
 import type { HealthResponse, KeysResponse } from '@/lib/types'
 
+// Fallback retry cadence used before the app has ever obtained a real
+// poll_interval_seconds from a successful /health response (e.g. the very
+// first load on page open failed).
+const DEFAULT_RETRY_SECONDS = 15
+
 interface HealthState {
   health: HealthResponse | null
   keys: KeysResponse | null
@@ -87,9 +92,15 @@ export function useHealth() {
 
   // Auto-refetch on the same cadence as the background poller, so the UI
   // doesn't sit on stale data until someone manually hits Refresh.
-  const pollIntervalSeconds = state.health?.poll_meta?.poll_interval_seconds ?? null
+  //
+  // pollIntervalSeconds only exists once a load has ever *succeeded*
+  // (poll_meta comes from the response body) - if the very first /health
+  // fetch on page load fails, state.health stays null forever and this
+  // would otherwise never schedule a retry at all. DEFAULT_RETRY_SECONDS is
+  // the fallback used until real poll_meta has been obtained at least once.
+  const pollIntervalSeconds = state.health?.poll_meta?.poll_interval_seconds ?? DEFAULT_RETRY_SECONDS
   useEffect(() => {
-    if (pollIntervalSeconds == null || state.lastAttemptAt == null) return
+    if (state.lastAttemptAt == null) return
     const elapsedMs = Date.now() - state.lastAttemptAt
     const remainingMs = Math.max(0, pollIntervalSeconds * 1000 - elapsedMs)
     const timer = setTimeout(() => {

@@ -125,6 +125,29 @@ def test_mfa_login_with_recovery_code_and_single_use(configured):
     assert second_use.status_code == 401  # already consumed
 
 
+def test_mfa_pending_challenge_expires(configured, monkeypatch):
+    # An abandoned/stolen post-password session cookie must not be usable to
+    # complete the second factor arbitrarily later - the pending challenge
+    # has a deadline, not just "does a pending user id exist in the session".
+    import admin as admin_module
+
+    client = configured.app.test_client()
+    _login(client)
+    secret = client.post("/admin/api/profile/mfa/enroll").get_json()["secret"]
+    client.post("/admin/api/profile/mfa/confirm", json={"code": pyotp.TOTP(secret).now()})
+    client.post("/admin/api/logout")
+
+    _login(client)  # password step succeeds, MFA now pending
+
+    # Simulate the challenge deadline already having passed.
+    real_time = admin_module.time.time
+    monkeypatch.setattr(admin_module.time, "time", lambda: real_time() + admin_module.MFA_CHALLENGE_TTL_SECONDS + 1)
+
+    resp = client.post("/admin/api/login/mfa", json={"code": pyotp.TOTP(secret).now()})
+    assert resp.status_code == 400
+    assert "pending" in resp.get_json()["error"].lower()
+
+
 def test_mfa_disable_requires_valid_totp_code(configured):
     client = configured.app.test_client()
     _login(client)

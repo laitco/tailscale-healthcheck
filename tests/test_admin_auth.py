@@ -54,6 +54,19 @@ def test_setup_redirect_when_tailnet_unconfigured(unconfigured):
     assert resp.headers["Location"] == "/admin/setup"
 
 
+def test_trailing_slash_dashboard_routes_are_gated(configured):
+    # strict_slashes=False means /dashboard/ resolves to the same view as
+    # /dashboard - a path-string-based gate that only recognized the
+    # slashless form let the trailing-slash variant through completely
+    # unauthenticated (a real bypass giving full dashboard access).
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    for path in ("/dashboard/", "/devices/", "/tailnet-keys/", "/debug/", "/device/xyz/"):
+        resp = client.get(path)
+        assert resp.status_code == 302, f"{path} should redirect to login, got {resp.status_code}"
+        assert resp.headers["Location"] == "/admin/login"
+
+
 def test_setup_redirect_when_no_users_even_if_tailnet_configured(configured):
     # Tailnet is configured but no users exist yet -> still routed to setup.
     client = configured.app.test_client()
@@ -303,6 +316,28 @@ def test_json_api_family_is_public(configured, monkeypatch):
 
     # The human dashboard is still gated behind login.
     assert client.get("/dashboard").status_code == 302
+
+
+def test_health_family_exposes_poll_meta_for_staleness_detection(configured, monkeypatch):
+    # /health already exposed poll_meta so a monitoring consumer can detect
+    # a stale/failed-poll snapshot; /health/<identifier>, /health/healthy,
+    # and /health/unhealthy (the other routes actually used for per-device
+    # Gatus-style checks per the README) must too, or a device that was
+    # last known healthy keeps reporting healthy: true indefinitely once
+    # polling itself starts failing, with no way for the caller to tell.
+    device = {
+        "id": "d1", "name": "dev1.example.com", "hostname": "dev1", "os": "linux",
+        "clientVersion": "1.0", "updateAvailable": False, "connectedToControl": True,
+        "lastSeen": "2024-01-01T00:00:00Z", "keyExpiryDisabled": True, "expires": None,
+        "tags": [],
+    }
+    monkeypatch.setattr(configured, "fetch_devices", lambda: [device])
+    client = configured.app.test_client()
+
+    for path in ("/health/d1", "/health/healthy", "/health/unhealthy"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert "poll_meta" in resp.get_json(), f"{path} response is missing poll_meta"
 
 
 def test_admin_api_returns_json_401_when_logged_out(configured):

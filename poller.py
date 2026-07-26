@@ -114,14 +114,21 @@ def run_poll_cycle():
     import healthcheck  # deferred: avoids circular import at module load time
 
     have_access_token = getattr(healthcheck, "ACCESS_TOKEN", None)
-    oauth_configured = dbstore.get_setting("oauth_client_id") and dbstore.get_setting("oauth_client_secret")
-    if not have_access_token and oauth_configured:
-        # ACCESS_TOKEN is per-process; if OAuth creds became configured via
-        # the settings UI (handled by a different worker process than this
-        # one) while a still-working static token meant no 401 ever occurred
-        # to trigger the usual retry-driven fetch, self-heal here instead -
-        # this runs in the one process that actually owns polling, so it's
-        # process-correct regardless of which worker persisted the setting.
+    cached_client_id = getattr(healthcheck, "ACCESS_TOKEN_CLIENT_ID", None)
+    current_client_id = dbstore.get_setting("oauth_client_id")
+    oauth_configured = current_client_id and dbstore.get_setting("oauth_client_secret")
+    if oauth_configured and (not have_access_token or cached_client_id != current_client_id):
+        # ACCESS_TOKEN is per-process; two distinct staleness cases both need
+        # this: (1) OAuth creds became configured via the settings UI while
+        # a still-working static token meant no 401 ever occurred to trigger
+        # the usual retry-driven fetch, and (2) OAuth creds were REPLACED
+        # (new client id/secret) while a cached token from the OLD client is
+        # still truthy - without comparing the client id, that stale token
+        # for a possibly-now-wrong tailnet/client would just keep being used
+        # until it happens to expire or get a 401 (which a wrong-but-still-
+        # valid-elsewhere token might never do). This runs in the one
+        # process that actually owns polling, so it's process-correct
+        # regardless of which worker persisted the setting.
         healthcheck.fetch_oauth_token()
 
     tailnet_domain = dbstore.get_setting("tailnet_domain")

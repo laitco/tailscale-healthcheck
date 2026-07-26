@@ -345,40 +345,65 @@ def _db_get_setting_row(conn, name):
     return row
 
 
+def _set_setting_in_conn(conn, name: str, value, source: str = "db", actor: str = None):
+    """Core of set_setting(), operating on a caller-supplied connection so
+    multiple settings can be persisted in one shared transaction - see
+    set_settings_batch()."""
+    existing = _db_get_setting_row(conn, name)
+    old_value = existing["value"] if existing else None
+    if existing is None or old_value != value:
+        conn.execute(
+            "INSERT INTO settings (name, value, source, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, source=excluded.source, "
+            "updated_at=excluded.updated_at",
+            (name, value, source, _now_iso()),
+        )
+        if name in SECRET_SETTINGS:
+            audited_old = _REDACTED if old_value else None
+            audited_new = _REDACTED if value else None
+        else:
+            audited_old, audited_new = old_value, value
+        _add_audit(
+            conn, "setting", name,
+            "created" if existing is None else "updated",
+            {"old": audited_old, "new": audited_new, "source": source},
+            actor=actor,
+        )
+    else:
+        # Value unchanged; still refresh source/updated_at silently (no audit noise).
+        conn.execute(
+            "UPDATE settings SET source = ?, updated_at = ? WHERE name = ?",
+            (source, _now_iso(), name),
+        )
+
+
 def set_setting(name: str, value, source: str = "db", actor: str = None):
-    """Upsert a setting, writing an audit row only when the value actually changes.
+    """Upsert a single setting in its own transaction. See set_settings_batch()
+    to persist several settings atomically in one transaction.
 
     Secret settings (SECRET_SETTINGS) are never written to the audit trail in
     plaintext - old/new values are redacted, only the fact that a change
     happened (and its source) is recorded.
     """
     with get_connection() as conn:
-        existing = _db_get_setting_row(conn, name)
-        old_value = existing["value"] if existing else None
-        if existing is None or old_value != value:
-            conn.execute(
-                "INSERT INTO settings (name, value, source, updated_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(name) DO UPDATE SET value=excluded.value, source=excluded.source, "
-                "updated_at=excluded.updated_at",
-                (name, value, source, _now_iso()),
-            )
-            if name in SECRET_SETTINGS:
-                audited_old = _REDACTED if old_value else None
-                audited_new = _REDACTED if value else None
-            else:
-                audited_old, audited_new = old_value, value
-            _add_audit(
-                conn, "setting", name,
-                "created" if existing is None else "updated",
-                {"old": audited_old, "new": audited_new, "source": source},
-                actor=actor,
-            )
-        else:
-            # Value unchanged; still refresh source/updated_at silently (no audit noise).
-            conn.execute(
-                "UPDATE settings SET source = ?, updated_at = ? WHERE name = ?",
-                (source, _now_iso(), name),
-            )
+        _set_setting_in_conn(conn, name, value, source=source, actor=actor)
+
+
+def set_settings_batch(items: dict, source: str = "db", actor: str = None):
+    """Upsert several settings (name -> encoded value) in ONE transaction.
+
+    Used by /admin/api/settings so a multi-field save is genuinely
+    all-or-nothing at the database level too: with each setting persisted
+    through its own separate set_setting() call/transaction, two admins
+    saving related fields concurrently (e.g. a new OAuth client id in one
+    request and its matching secret in another) could interleave and leave
+    a client id paired with the wrong secret, and readers like the poller
+    could observe a partially-applied batch mid-save. A single shared
+    connection/transaction for the whole batch closes both gaps.
+    """
+    with get_connection() as conn:
+        for name, value in items.items():
+            _set_setting_in_conn(conn, name, value, source=source, actor=actor)
 
 
 def _env_override_value(name: str):
@@ -417,7 +442,12 @@ def sync_env_settings():
     for name in SETTINGS_REGISTRY:
         value = _env_override_value(name)
         if value is not None:
-            set_setting(name, value, source="env")
+            # "startup", not None - a bare NULL actor is reserved for the
+            # background poller's own device/key audit rows so the audit UI
+            # can distinguish "the poller changed this" from "this happened
+            # automatically at process boot", rather than lumping every
+            # non-human change together as if it came from polling.
+            set_setting(name, value, source="env", actor="startup")
         else:
             with get_connection() as conn:
                 row = conn.execute(
@@ -557,7 +587,7 @@ def get_secret_key() -> str:
         if row and row["value"]:
             return row["value"]
     generated = secrets.token_hex(32)
-    set_setting("secret_key", generated, source="db")
+    set_setting("secret_key", generated, source="db", actor="startup")
     return generated
 
 
@@ -584,18 +614,30 @@ def get_poll_meta():
         return row["value"] if row else None
 
 
-def try_claim_manual_poll(ttl_seconds: int = 10) -> bool:
+MANUAL_POLL_CLAIM_TTL_SECONDS = 300  # crash-recovery ceiling only, see try_claim_manual_poll
+
+
+def try_claim_manual_poll(ttl_seconds: int = MANUAL_POLL_CLAIM_TTL_SECONDS) -> bool:
     """Atomically claim the right to run an out-of-band poll cycle right now.
 
     /health/cache/invalidate is public/unauthenticated, and run_poll_cycle()
     does real outbound HTTP + DB work - without this, N concurrent public
     callers would each synchronously run their own full cycle, tying up
-    every Gunicorn worker for the duration of the outbound calls. This is a
-    short-lived (ttl_seconds) claim stored in the settings table (shared
-    across all worker processes via SQLite) so concurrent/rapid calls
-    collapse into a single actual poll instead: only the caller that wins
-    the claim runs one, everyone else within the TTL window is told a
-    refresh is already in flight and does no outbound work at all.
+    every Gunicorn worker for the duration of the outbound calls. This claim
+    is stored in the settings table (shared across all worker processes via
+    SQLite) so concurrent/rapid calls collapse into a single actual poll
+    instead: only the caller that wins the claim runs one, everyone else
+    while it's held is told a refresh is already in flight and does no
+    outbound work at all.
+
+    ttl_seconds is a crash-recovery ceiling, NOT how long a normal poll is
+    expected to take - HTTP_TIMEOUT/MAX_RETRIES are both admin-configurable,
+    so no fixed short TTL can safely bound how long a real cycle might run;
+    a too-short TTL just lets concurrent callers back in mid-cycle and
+    defeats the point of claiming at all. The caller must release_manual_
+    poll_claim() as soon as the cycle actually finishes (success or
+    failure) rather than relying on the TTL for the normal-completion case -
+    the TTL only matters if the process dies mid-cycle without releasing.
     """
     now = time.time()
     new_value = str(now + ttl_seconds)
@@ -616,6 +658,14 @@ def try_claim_manual_poll(ttl_seconds: int = 10) -> bool:
             (new_value, _now_iso(), now),
         )
         return cur.rowcount == 1
+
+
+def release_manual_poll_claim():
+    """Release the manual-poll claim immediately once a cycle finishes
+    (success or failure), instead of making the next legitimate caller wait
+    out the crash-recovery TTL."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM settings WHERE name = 'manual_poll_claimed_until'")
 
 
 def set_poll_status(ok: bool, error: str = None, auth_error: bool = False):
@@ -662,10 +712,30 @@ def create_user(username: str, password: str, actor: str = None):
         _add_audit(conn, "user", username, "created", {"username": username}, actor=actor)
 
 
-def delete_user(username: str, actor: str = None):
+def delete_user(username: str, actor: str = None) -> str:
+    """Delete a user, refusing to remove the last one - atomically. The
+    "last user" guard is expressed as part of the DELETE statement's WHERE
+    clause (a subquery counting current rows) rather than a separate SELECT
+    beforehand: a check-then-delete across two statements/transactions would
+    let two concurrent deletes (of two different usernames) both observe
+    "2 users remain" and both succeed, leaving zero users (which re-opens
+    the unauthenticated setup wizard). A single DELETE...WHERE is one
+    indivisible operation under SQLite's writer serialization, closing that
+    window. Returns "deleted", "not_found", or "last_user" for the caller
+    to map to the right HTTP response.
+    """
     with get_connection() as conn:
-        conn.execute("DELETE FROM users WHERE username = ?", (username,))
-        _add_audit(conn, "user", username, "removed", {"username": username}, actor=actor)
+        cur = conn.execute(
+            "DELETE FROM users WHERE username = ? AND (SELECT COUNT(*) FROM users) > 1",
+            (username,),
+        )
+        if cur.rowcount == 1:
+            _add_audit(conn, "user", username, "removed", {"username": username}, actor=actor)
+            return "deleted"
+        # No row deleted: either the user doesn't exist, or they do but
+        # deleting them would leave zero users - disambiguate with a lookup.
+        still_exists = conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
+        return "last_user" if still_exists else "not_found"
 
 
 def get_user_by_username(username: str):

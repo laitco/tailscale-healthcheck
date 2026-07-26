@@ -13,6 +13,7 @@ app that legitimately needs POST/DELETE.
 import logging
 import os
 import secrets
+import time
 
 import requests
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
@@ -22,6 +23,12 @@ import dbstore
 import poller
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+# How long a password-verified-but-MFA-pending session state stays valid
+# before the second factor must be re-entered from scratch (i.e. the whole
+# password + code flow starts over). Bounds how long an abandoned or stolen
+# post-password session cookie could be used to complete login later.
+MFA_CHALLENGE_TTL_SECONDS = 5 * 60
 
 
 def _read_app_version() -> str:
@@ -228,9 +235,9 @@ def api_setup():
                 logging.warning(f"Setup wizard: OAuth credential validation failed: {e}")
                 return jsonify({"error": "Could not authenticate to the Tailscale API with the provided OAuth credentials"}), 400
             if tailnet_needs_input:
-                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
-            dbstore.set_setting("oauth_client_id", client_id, source="db")
-            dbstore.set_setting("oauth_client_secret", client_secret, source="db")
+                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db", actor="setup")
+            dbstore.set_setting("oauth_client_id", client_id, source="db", actor="setup")
+            dbstore.set_setting("oauth_client_secret", client_secret, source="db", actor="setup")
         elif auth_mode == "token":
             auth_token = str(data.get("auth_token", "")).strip()
             if not auth_token:
@@ -241,8 +248,8 @@ def api_setup():
                 logging.warning(f"Setup wizard: token credential validation failed: {e}")
                 return jsonify({"error": "Could not authenticate to the Tailscale API with the provided token"}), 400
             if tailnet_needs_input:
-                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db")
-            dbstore.set_setting("auth_token", auth_token, source="db")
+                dbstore.set_setting("tailnet_domain", tailnet_domain, source="db", actor="setup")
+            dbstore.set_setting("auth_token", auth_token, source="db", actor="setup")
         else:
             return jsonify({"error": "auth_mode must be 'token' or 'oauth'"}), 400
 
@@ -250,7 +257,7 @@ def api_setup():
 
     api_base_url = data.get("api_base_url")
     if api_base_url is not None and dbstore.get_setting_meta("api_base_url").get("source") != "env":
-        dbstore.set_setting("api_base_url", str(api_base_url).strip().rstrip("/"), source="db")
+        dbstore.set_setting("api_base_url", str(api_base_url).strip().rstrip("/"), source="db", actor="setup")
 
     if not dbstore.has_any_user():
         username = str(data.get("username", "")).strip()
@@ -259,7 +266,7 @@ def api_setup():
             return jsonify({"error": "A username and a password of at least 8 characters are required"}), 400
         if dbstore.get_user_by_username(username):
             return jsonify({"error": "Username already exists"}), 400
-        dbstore.create_user(username, password)
+        dbstore.create_user(username, password, actor="setup")
         response["user_created"] = True
 
     response["setup_complete"] = not _setup_incomplete()
@@ -291,8 +298,13 @@ def api_login():
     if user_row.get("totp_enabled"):
         # Don't establish the session yet - a second factor is still required.
         # Only the pending user id goes in the (signed, httponly) session
-        # cookie, nothing that could itself grant access.
+        # cookie, nothing that could itself grant access. The deadline
+        # bounds how long an abandoned/stolen post-password cookie could be
+        # used to complete the second factor later without re-entering the
+        # password - without it, a session cookie surviving the browser
+        # session would let that happen indefinitely.
         session["mfa_pending_user_id"] = user_row["id"]
+        session["mfa_pending_deadline"] = time.time() + MFA_CHALLENGE_TTL_SECONDS
         return jsonify({"ok": True, "mfa_required": True})
 
     from auth import User
@@ -306,6 +318,11 @@ def api_login_mfa():
     if not dbstore.check_login_rate_limit(request.remote_addr):
         return jsonify({"error": "Too many login attempts. Try again later."}), 429
     pending_id = session.get("mfa_pending_user_id")
+    deadline = session.get("mfa_pending_deadline")
+    if pending_id and (deadline is None or time.time() > deadline):
+        session.pop("mfa_pending_user_id", None)
+        session.pop("mfa_pending_deadline", None)
+        pending_id = None
     user_row = dbstore.get_user_by_id(pending_id) if pending_id else None
     if not user_row:
         return jsonify({"error": "No pending sign-in awaiting a verification code"}), 400
@@ -326,6 +343,7 @@ def api_login_mfa():
         return jsonify({"error": "Invalid verification code"}), 401
 
     session.pop("mfa_pending_user_id", None)
+    session.pop("mfa_pending_deadline", None)
     from auth import User
     login_user(User.from_row(user_row))
     dbstore.touch_last_login(user_row["id"])
@@ -443,10 +461,11 @@ def api_update_settings():
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
-    updated = []
-    for name, encoded in encoded_values.items():
-        dbstore.set_setting(name, encoded, source="db", actor=current_user.username)
-        updated.append(name)
+    # One shared transaction for the whole batch - see set_settings_batch's
+    # docstring for why per-field transactions weren't actually atomic
+    # despite validating everything up front first.
+    dbstore.set_settings_batch(encoded_values, source="db", actor=current_user.username)
+    updated = list(encoded_values.keys())
 
     restarts_needed = sorted(set(updated) & RESTART_REQUIRED_SETTINGS)
     return jsonify({"ok": True, "updated": updated, "restart_required_for": restarts_needed})
@@ -497,11 +516,11 @@ def api_create_user():
 @admin_bp.route("/api/users/<string:username>", methods=["DELETE"])
 @login_required
 def api_delete_user(username):
-    if len(dbstore.list_users()) <= 1:
-        return jsonify({"error": "Cannot delete the last remaining user"}), 400
-    if not dbstore.get_user_by_username(username):
+    result = dbstore.delete_user(username, actor=current_user.username)
+    if result == "not_found":
         return jsonify({"error": "User not found"}), 404
-    dbstore.delete_user(username, actor=current_user.username)
+    if result == "last_user":
+        return jsonify({"error": "Cannot delete the last remaining user"}), 400
     return jsonify({"ok": True})
 
 

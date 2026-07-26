@@ -22,11 +22,17 @@ def _load_healthcheck() -> types.ModuleType:
 
 
 @pytest.mark.skipif(not _HAVE_LIMITER, reason="Flask-Limiter not installed")
-def test_rate_limit_per_ip(monkeypatch):
-    # Configure strict, low per-IP limit and disable global
+def test_rate_limit_per_ip(monkeypatch, tmp_path):
+    # Configure strict, low per-IP limit and disable global. Rate-limit
+    # storage must be isolated per test (like test_rate_limit_file_backend_per_ip
+    # below already does) - the default file:///tmp/... path is otherwise
+    # shared with every other test in the suite that doesn't override it,
+    # making this test's outcome depend on how many /health requests
+    # happened to run earlier in the same 1-minute window.
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "YES")
     monkeypatch.setenv("RATE_LIMIT_PER_IP", "2")
     monkeypatch.setenv("RATE_LIMIT_GLOBAL", "")
+    monkeypatch.setenv("RATE_LIMIT_STORAGE_URL", f"file://{tmp_path / 'rl-per-ip.json'}")
 
     module = _load_healthcheck()
     # Avoid external calls during GETs by mocking device fetch

@@ -143,6 +143,17 @@ def test_manual_poll_claim_expires(tmp_path):
     assert dbstore.try_claim_manual_poll(ttl_seconds=10) is True
 
 
+def test_manual_poll_claim_release_lets_next_caller_in_immediately(tmp_path):
+    _fresh_db(tmp_path)
+    assert dbstore.try_claim_manual_poll(ttl_seconds=300) is True
+    assert dbstore.try_claim_manual_poll(ttl_seconds=300) is False
+    dbstore.release_manual_poll_claim()
+    # A normal-completion release must not require waiting out the
+    # crash-recovery TTL - the whole point is the next caller isn't blocked
+    # for up to 300s just because the previous poll already finished.
+    assert dbstore.try_claim_manual_poll(ttl_seconds=300) is True
+
+
 def test_rate_limit_storage_url_is_a_secret_setting():
     assert "rate_limit_storage_url" in dbstore.SECRET_SETTINGS
 
@@ -360,5 +371,26 @@ def test_user_crud_and_password_verification(tmp_path):
     assert dbstore.verify_password("alice", "wrong-password") is None
     assert dbstore.verify_password("nobody", "whatever") is None
 
-    dbstore.delete_user("alice")
-    assert not dbstore.has_any_user()
+    # delete_user() refuses to remove the sole remaining user (enforced
+    # atomically inside the function itself - see
+    # test_delete_user_last_user_guard_is_atomic for why it can't be a
+    # separate check-then-delete).
+    assert dbstore.delete_user("alice") == "last_user"
+    assert dbstore.has_any_user()
+
+    dbstore.create_user("bob", "another-password")
+    assert dbstore.delete_user("alice") == "deleted"
+    assert dbstore.delete_user("nobody") == "not_found"
+    assert dbstore.has_any_user()  # bob remains
+
+
+def test_delete_user_last_user_guard_is_atomic(tmp_path):
+    _fresh_db(tmp_path)
+    dbstore.create_user("alice", "s3cret-password")
+    dbstore.create_user("bob", "another-password")
+
+    # With exactly 2 users, deleting either one individually must succeed...
+    assert dbstore.delete_user("alice") == "deleted"
+    # ...but now only 1 remains, so deleting the last one is refused.
+    assert dbstore.delete_user("bob") == "last_user"
+    assert dbstore.has_any_user()

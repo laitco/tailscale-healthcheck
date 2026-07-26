@@ -213,6 +213,11 @@ def _build_poll_meta() -> dict:
 
 # Global variable to store the OAuth access token and timer
 ACCESS_TOKEN = None
+# Which oauth_client_id ACCESS_TOKEN was fetched for - lets callers detect
+# "credentials were replaced via the settings UI" (a still-truthy but now
+# stale token for the OLD client) rather than only "no token at all", see
+# poller.py's self-heal check.
+ACCESS_TOKEN_CLIENT_ID = None
 TOKEN_RENEWAL_TIMER = None
 
 # Global variable to track if it's the initial token fetch
@@ -222,7 +227,7 @@ def fetch_oauth_token():
     """
     Fetches a new OAuth access token using the client ID and client secret.
     """
-    global ACCESS_TOKEN, TOKEN_RENEWAL_TIMER, IS_INITIAL_FETCH
+    global ACCESS_TOKEN, ACCESS_TOKEN_CLIENT_ID, TOKEN_RENEWAL_TIMER, IS_INITIAL_FETCH
     client_id = dbstore.get_setting("oauth_client_id")
     client_secret = dbstore.get_setting("oauth_client_secret")
     try:
@@ -237,6 +242,7 @@ def fetch_oauth_token():
         response.raise_for_status()
         token_data = response.json()
         ACCESS_TOKEN = token_data["access_token"]
+        ACCESS_TOKEN_CLIENT_ID = client_id
         logging.info("Successfully fetched OAuth access token.")
 
         # Cancel any existing timer before scheduling a new one
@@ -331,7 +337,7 @@ def enforce_read_only_methods():
         )
     # No return -> continue when allowed
 
-_DASHBOARD_UI_PATHS = {"/", "/dashboard", "/devices", "/tailnet-keys", "/debug"}
+_DASHBOARD_UI_ENDPOINTS = {"ui_dashboard", "ui_devices", "ui_tailnet_keys", "ui_debug", "ui_device_detail"}
 
 @app.before_request
 def _gate_dashboard_ui():
@@ -347,10 +353,14 @@ def _gate_dashboard_ui():
     An existing user always goes through login, then can repair connection
     settings from /admin/settings; only a genuinely user-less instance goes
     to the unauthenticated bootstrap wizard.
+
+    Gates on request.endpoint (the resolved view function), not request.path
+    string-matching - app.url_map.strict_slashes = False means e.g. both
+    /dashboard and /dashboard/ resolve to the same ui_dashboard endpoint, and
+    a path-string check only recognizing the slashless form let the
+    trailing-slash variant through completely ungated.
     """
-    path = request.path
-    is_dashboard_path = path in _DASHBOARD_UI_PATHS or path.startswith("/device/")
-    if not is_dashboard_path:
+    if request.endpoint not in _DASHBOARD_UI_ENDPOINTS:
         return None
     if not dbstore.has_any_user():
         return redirect(url_for("admin.setup_page"))
@@ -1215,7 +1225,14 @@ def health_check_by_identifier(identifier):
                         "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
                         "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
                         "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
-                    }
+                    },
+                    # If polling has been failing (credentials revoked, API
+                    # unreachable), this device's fields are the last known
+                    # snapshot, not current - poll_meta lets a monitoring
+                    # consumer (e.g. the Gatus check in the README) detect
+                    # that a "healthy: true" response may be stale, the same
+                    # way /health already does.
+                    "poll_meta": _build_poll_meta(),
                 }
 
                 return jsonify(response)
@@ -1352,7 +1369,8 @@ def health_check_unhealthy():
                 "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
                 "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
                 "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
-            }
+            },
+            "poll_meta": _build_poll_meta(),
         }
 
         return jsonify(response)
@@ -1480,7 +1498,8 @@ def health_check_healthy():
                 "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
                 "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
                 "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
-            }
+            },
+            "poll_meta": _build_poll_meta(),
         }
 
         return jsonify(response)
@@ -1528,6 +1547,12 @@ def cache_invalidate():
     except Exception as e:
         logging.error(f"Error triggering poll: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        # Released as soon as the cycle actually finishes (success or
+        # failure) rather than making the next caller wait out the
+        # crash-recovery TTL, which only exists for the case where this
+        # process dies mid-cycle without reaching this line.
+        dbstore.release_manual_poll_claim()
 
 if __name__ == '__main__':
     dbstore.init_db()
