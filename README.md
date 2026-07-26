@@ -25,12 +25,19 @@
   - [`/health/<identifier>`](#healthidentifier)
   - [`/health/healthy`](#healthhealthy)
   - [`/health/unhealthy`](#healthunhealthy)
+  - [`/health/cache/invalidate`](#healthcacheinvalidate)
+  - [`/admin`](#admin)
 - [⚙️ Configuration](#️-configuration)
+  - [Logging](#logging)
+  - [Rate Limiting](#rate-limiting)
+  - [Background Polling](#background-polling)
+  - [Read-Only Proxy](#read-only-proxy)
+- [🔐 Admin UI](#-admin-ui)
+  - [Response Metrics](#response-metrics)
   - [Using OAuth for Authentication](#using-oauth-for-authentication-recommended)
   - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
-  - [Logging](#logging)
-  - [Rate Limiting](#rate-limiting)
+  - [Filter Configuration Examples](#filter-configuration-examples)
 - [🐳 Running with Docker](#-running-with-docker)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
@@ -87,6 +94,7 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Interactive API docs page (`/admin/api-docs`) with "Try it" against the live API
   - Debug page (`/debug`) showing the background poller's recent activity log (persisted, not in-memory), filterable by event type
   - A visible banner on the dashboard and settings page when the poller can't reach the Tailscale API, calling out auth-credential problems specifically
+  - User profile page (`/admin/profile`): change password, and enroll/disable TOTP-based two-factor authentication (with one-time recovery codes shown on enrollment); MFA-enabled accounts get a second login step
 - **Tailnet Key Filters**: `INCLUDE_KEY_TYPE`/`EXCLUDE_KEY_TYPE`/`INCLUDE_KEY_DESCRIPTION`/`EXCLUDE_KEY_DESCRIPTION` narrow which tailnet API/auth keys are reported, mirroring the device filters below.
 
 ## 📡 Endpoints
@@ -285,8 +293,8 @@ Notes:
 
 - Every route except `/admin/*` enforces read-only access: only `GET`, `HEAD`, and `OPTIONS` are allowed. Modifying methods (`POST`, `PUT`, `PATCH`, `DELETE`) are blocked with `403 Forbidden` and attempts are logged for auditing. This behavior is not user-configurable by design.
 - `/admin/*` is the one exception: it's where the setup wizard, login, settings, user management, and audit log live, and it legitimately needs `POST`/`DELETE`. It's protected by login instead (see [Admin UI](#-admin-ui)).
-- **Only `/health` (and its `/health/` trailing-slash redirect) stays unauthenticated** - that's the one contract existing monitoring integrations (Gatus, etc.) depend on. Every other route now requires login: `/keys`, `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, `/health/cache/invalidate`, the human dashboard, and all of `/admin/*` except the setup/login endpoints themselves.
-- `/health` can optionally be locked down further with `HEALTH_ENDPOINT_TOKEN` (see Configuration) without requiring a login session - useful if you want to keep it out of a login flow (for monitoring tools) but still restrict who can query it. Leave it unset to keep `/health` fully open, as it is by default.
+- **The entire JSON API family stays public and unauthenticated by default**: `/health`, `/health/` (redirect), `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, `/health/cache/invalidate`, and `/keys` - that's the contract existing monitoring integrations (Gatus, etc.) depend on. Only the human dashboard (`/`, `/dashboard`, `/devices`, `/tailnet-keys`, `/debug`, `/device/<identifier>`) and `/admin/*` (except the setup/login endpoints themselves) require a logged-in session.
+- The whole JSON API family can optionally be locked down with `HEALTH_ENDPOINT_TOKEN` (see Configuration) without requiring a login session - useful if you want to keep it out of a login flow (for monitoring tools) but still restrict who can query it. Leave it unset to keep it fully open, as it is by default.
 
 ## 🔐 Admin UI
 
@@ -423,70 +431,34 @@ Note: The container runs as a non-root user (`appuser`, UID 10001) following lea
 
 ### 2. **Run the Docker Container**:
 
-#### Using an API Key
+A `/data` volume is the only thing that's actually required - it's where the SQLite database (settings, users, device/key snapshots, audit log) lives, and without it you'd lose your configuration and admin account on every container recreation.
+
 ```bash
 docker run -d -p 5000:5000 \
   -v tailscale-healthcheck-data:/data \
-    -e TAILNET_DOMAIN="example.com" \
-    -e AUTH_TOKEN="your-api-key" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck
+  --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
 
-#### Using OAuth
+That's it - open `http://IP-ADDRESS_OR_HOSTNAME:5000/` and the setup wizard walks you through connecting to your tailnet (API token or OAuth) and creating the first admin account. No environment variables are required for a first run.
+
+Prefer to skip the wizard (e.g. for automated/scripted deployments)? Any setting can still be pre-configured via environment variables - see [Configuration](#️-configuration) for the full list. For example:
+
 ```bash
 docker run -d -p 5000:5000 \
   -v tailscale-healthcheck-data:/data \
-    -e TAILNET_DOMAIN="example.com" \
-    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
-    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck
+  -e TAILNET_DOMAIN="your-tailnet.ts.net" \
+  -e AUTH_TOKEN="your-api-key" \
+  --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
+
+Env vars always take precedence over whatever's saved in the database, and are synced into it on every boot - if you remove one later, the last-known value keeps being used and becomes editable in `/admin/settings` again instead of reverting to "unconfigured".
 
 ### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/
    ```
-   This opens the web dashboard with global metrics, search/filter controls, export (CSV/JSON), and device details. The raw JSON API remains available at:
+   First visit (or once no admin account exists) redirects to the setup wizard; afterwards this is the web dashboard with global metrics, search/filter controls, export (CSV/JSON), and device details - behind login. The raw JSON API remains available, unauthenticated by default, at:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
@@ -505,69 +477,18 @@ docker run -d -p 5000:5000 \
 
 ### 2. **Run the Docker Container**:
 
-#### Using an API Key
-```bash
-docker run -d -p 5000:5000 \
-  -v tailscale-healthcheck-data:/data \
-    -e TAILNET_DOMAIN="example.com" \
-    -e AUTH_TOKEN="your-api-key" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
-```
+Same as above - only the `/data` volume is required, everything else is configured via the setup wizard on first visit:
 
-#### Using OAuth
 ```bash
 docker run -d -p 5000:5000 \
   -v tailscale-healthcheck-data:/data \
-    -e TAILNET_DOMAIN="example.com" \
-    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
-    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
+  --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
 
 ### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
-   http://IP-ADDRESS_OR_HOSTNAME:5000/health
+   http://IP-ADDRESS_OR_HOSTNAME:5000/
    ```
 
 ## 📡 Integration with Gatus Monitoring System

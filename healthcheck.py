@@ -24,7 +24,7 @@ from urllib3.exceptions import ProtocolError  # Add import for better error hand
 from http.client import RemoteDisconnected  # Add import for better error handling
 import fnmatch  # Add for wildcard pattern matching
 from dateutil import parser  # Add this import
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 import dbstore
 import poller
@@ -1033,7 +1033,6 @@ def health_check():
 
 @app.route('/keys', methods=['GET'])
 @_apply_limits
-@login_required
 def keys_status():
     """Return health status for tailnet API/auth keys.
 
@@ -1042,6 +1041,8 @@ def keys_status():
     not configured, or the tailnet has no such keys, this returns an empty
     list with metrics reflecting that state rather than erroring out.
     """
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
     try:
         try:
             key_status, metrics = _get_tailnet_keys_status()
@@ -1078,8 +1079,9 @@ def health_check_redirect():
 
 @app.route('/health/<identifier>', methods=['GET'])
 @_apply_limits
-@login_required
 def health_check_by_identifier(identifier):
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
     try:
         # Fetch devices from the SQLite snapshot maintained by the background poller
         devices = fetch_devices()
@@ -1216,8 +1218,9 @@ def health_check_by_identifier(identifier):
 
 @app.route('/health/unhealthy', methods=['GET'])
 @_apply_limits
-@login_required
 def health_check_unhealthy():
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
     try:
         # Fetch devices from the SQLite snapshot maintained by the background poller
         devices = fetch_devices()
@@ -1349,8 +1352,9 @@ def health_check_unhealthy():
 
 @app.route('/health/healthy', methods=['GET'])
 @_apply_limits
-@login_required
 def health_check_healthy():
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
     try:
         # Fetch devices from the SQLite snapshot maintained by the background poller
         devices = fetch_devices()
@@ -1476,7 +1480,6 @@ def health_check_healthy():
 
 @app.route('/health/cache/invalidate', methods=['GET'])
 @_apply_limits
-@login_required
 def cache_invalidate():
     """Trigger an immediate out-of-band poll cycle.
 
@@ -1484,6 +1487,8 @@ def cache_invalidate():
     monitoring scripts; the underlying response cache this route used to
     clear no longer exists (device/key data is now polled into SQLite).
     """
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
     try:
         poller.run_poll_cycle()
         return jsonify({

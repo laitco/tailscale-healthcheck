@@ -163,18 +163,27 @@ def test_health_poll_meta_surfaces_auth_error(configured, monkeypatch):
     assert poll_meta["last_poll_error"] == "401 Client Error"
 
 
-def test_only_health_root_is_public(configured, monkeypatch):
+def test_json_api_family_is_public(configured, monkeypatch):
+    # The entire JSON API family stays public/unauthenticated by default -
+    # that's the monitoring-tool contract (Gatus, etc.) - only the human
+    # dashboard and /admin/* (besides login/setup) require a session.
     monkeypatch.setattr(configured, "fetch_devices", lambda: [])
+    monkeypatch.setattr(configured, "_get_tailnet_keys_status", lambda: ([], {"tailnet_configured": True}))
+    monkeypatch.setattr(configured.poller, "run_poll_cycle", lambda: None)
     client = configured.app.test_client()
 
-    # /health (and its trailing-slash redirect) stay open, no session needed.
     assert client.get("/health").status_code == 200
     assert client.get("/health/").status_code == 301
+    assert client.get("/keys").status_code == 200
+    assert client.get("/health/some-device").status_code == 404  # no such device, but reachable
+    assert client.get("/health/healthy").status_code == 200
+    assert client.get("/health/unhealthy").status_code == 200
 
-    # Everything else in the /health*/keys family now requires login.
-    for path in ("/keys", "/health/some-device", "/health/healthy", "/health/unhealthy", "/health/cache/invalidate"):
-        resp = client.get(path)
-        assert resp.status_code in (302, 401), f"{path} should require auth, got {resp.status_code}"
+    resp = client.get("/health/cache/invalidate")
+    assert resp.status_code == 200
+
+    # The human dashboard is still gated behind login.
+    assert client.get("/dashboard").status_code == 302
 
 
 def test_health_endpoint_token_via_env(tmp_path, monkeypatch):
