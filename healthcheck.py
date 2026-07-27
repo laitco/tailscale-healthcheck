@@ -29,6 +29,7 @@ from flask_login import current_user
 import dbstore
 import poller
 import auth
+import notifier
 from admin import admin_bp
 
 def get_log_level_from_env(default=logging.INFO):
@@ -700,7 +701,7 @@ HEALTH_SUMMARY_SETTINGS = (
     "update_healthy_is_included_in_health",
     "global_healthy_threshold", "global_key_healthy_threshold",
     "global_online_healthy_threshold", "global_update_healthy_threshold",
-    "tailnet_lock_enabled", "global_lock_healthy_threshold",
+    "tailnet_lock_enabled", "global_lock_healthy_threshold", "lock_signer_tags",
     "include_os", "exclude_os", "include_identifier", "exclude_identifier",
     "include_tags", "exclude_tags",
     "include_identifier_update_healthy", "exclude_identifier_update_healthy",
@@ -759,6 +760,7 @@ def _compute_health_summary(devices):
         # just a non-empty tailnetLockError - an admin has to confirm they
         # actually use Tailnet Lock before it can affect health.
         lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+        is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
         is_healthy = online_is_healthy and key_healthy and lock_healthy
         if cfg["update_healthy_is_included_in_health"]:
             is_healthy = is_healthy and update_is_healthy
@@ -801,6 +803,7 @@ def _compute_health_summary(devices):
             "tailnetLockError": device.get("tailnetLockError", ""),
             "lock_healthy": lock_healthy,
             "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
+            "isLockSigner": is_lock_signer,
             "key_healthy": key_healthy,
             "key_days_to_expire": key_days_to_expire,
             "healthy": is_healthy,
@@ -1188,6 +1191,7 @@ def health_check_by_identifier(identifier):
                 update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
                 key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
                 lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+                is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
                 is_healthy = online_is_healthy and key_healthy and lock_healthy
                 if cfg["update_healthy_is_included_in_health"]:
                     is_healthy = is_healthy and update_is_healthy
@@ -1224,6 +1228,7 @@ def health_check_by_identifier(identifier):
                     "tailnetLockError": device.get("tailnetLockError", ""),
                     "lock_healthy": lock_healthy,
                     "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
+                    "isLockSigner": is_lock_signer,
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy and lock_healthy,
@@ -1336,6 +1341,7 @@ def health_check_unhealthy():
             update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+            is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
             is_healthy = online_is_healthy and key_healthy and lock_healthy
             if cfg["update_healthy_is_included_in_health"]:
                 is_healthy = is_healthy and update_is_healthy
@@ -1379,6 +1385,7 @@ def health_check_unhealthy():
                     "tailnetLockError": device.get("tailnetLockError", ""),
                     "lock_healthy": lock_healthy,
                     "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
+                    "isLockSigner": is_lock_signer,
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy and lock_healthy,
@@ -1484,6 +1491,7 @@ def health_check_healthy():
             update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
             lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+            is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
             is_healthy = online_is_healthy and key_healthy and lock_healthy
             if cfg["update_healthy_is_included_in_health"]:
                 is_healthy = is_healthy and update_is_healthy
@@ -1518,6 +1526,7 @@ def health_check_healthy():
                     "tailnetLockError": device.get("tailnetLockError", ""),
                     "lock_healthy": lock_healthy,
                     "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
+                    "isLockSigner": is_lock_signer,
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
                     "healthy": online_is_healthy and key_healthy and lock_healthy,

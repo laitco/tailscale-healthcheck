@@ -40,6 +40,7 @@ export interface Device {
   tailnetLockError: string
   lock_healthy: boolean
   tailnetLockEnabled: boolean
+  isLockSigner: boolean
   [key: string]: unknown
 }
 

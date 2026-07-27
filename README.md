@@ -30,6 +30,7 @@
 - [⚙️ Configuration](#️-configuration)
   - [Logging](#logging)
   - [Rate Limiting](#rate-limiting)
+  - [Notifications](#notifications)
   - [Background Polling](#background-polling)
   - [Read-Only Proxy](#read-only-proxy)
 - [🔐 Admin UI](#-admin-ui)
@@ -53,6 +54,8 @@
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
 > Release notes have moved to the [GitHub Releases page](https://github.com/laitco/tailscale-healthcheck/releases).
+
+> This project's code is largely AI-written (Claude Code), with a human in the loop driving requirements, design decisions, review, and testing.
 
 ## 🌟 Features
 
@@ -123,6 +126,8 @@ Returns the health status of all devices.
       "key_days_to_expire": 25,
       "tailnetLockError": "",
       "lock_healthy": true,
+      "tailnetLockEnabled": false,
+      "isLockSigner": false,
       "healthy": true,
       "tags": ["user-device", "admin-device"]
     }
@@ -243,6 +248,12 @@ The application is configured using environment variables:
 | `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status. Example: `YES`                             |
 | `TAILNET_LOCK_ENABLED`      | `NO`         | Explicit opt-in: set to `YES` if you use [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock). Off by default, so a device needing a signature has no effect on health unless you confirm you use it. Also settable from the setup wizard or `/admin/settings`. |
 | `GLOBAL_LOCK_HEALTHY_THRESHOLD`  | `100`        | The threshold for total Tailnet Lock health, only relevant when `TAILNET_LOCK_ENABLED=YES` (a device needing a signature is unhealthy). |
+| `LOCK_SIGNER_TAGS`   | `""`              | Comma-separated, wildcard tag patterns labeling which devices are trusted Tailnet Lock signers (a "Signer" badge on the devices table/device detail page) - admin-provided, since the Tailscale API has no endpoint for this (only the `tailscale lock status` CLI does). |
+| `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_CONFIG_KEY`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance. |
+| `APPRISE_CONFIG_KEY` | `""`              | The config/tag on that Apprise instance to notify - POSTs to `<APPRISE_API_URL>/notify/<APPRISE_CONFIG_KEY>`. |
+| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`. Only listed events actually notify; empty means none do. |
+| `NOTIFY_INCLUDE_TAGS`| `""`              | Comma-separated, wildcard tag patterns scoping which devices' transitions notify (the four `device_*`/`key_expiring`... events above that are per-device; global/poll events aren't device-scoped, so this doesn't affect them). |
+| `NOTIFY_EXCLUDE_TAGS`| `""`              | Same, but exclude. `NOTIFY_INCLUDE_TAGS` takes precedence if both are set. |
 | `PORT`               | `5000`            | The port the application runs on. Process bootstrap only - not part of the settings registry, not editable via `/admin/settings`. |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
@@ -289,6 +300,15 @@ Notes:
   - Without storage configured, limits apply per worker (in-memory).
   - With `redis://`, limits are shared across workers/instances (Flask-Limiter backend).
   - With `file://`, limits are shared on a single host via a JSON file with file locking.
+
+### Notifications
+
+- Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance - this app POSTs `{title, body}` to `<APPRISE_API_URL>/notify/<APPRISE_CONFIG_KEY>` after each poll cycle, it does not bundle the `apprise` Python library, so channel setup (Slack, Discord, email, ...) lives entirely on that instance.
+- Off by default: leave `APPRISE_API_URL`/`APPRISE_CONFIG_KEY` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
+- Fires once per *transition*, not on every poll cycle while a condition persists - e.g. a device staying unhealthy for an hour notifies once, not every `POLL_INTERVAL_SECONDS`. Nothing notifies on a device/key's first-ever appearance (avoids a notification storm on rollout).
+- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, and `poll_auth_error` aren't device-scoped and always notify regardless of these filters.
+- `device_needs_signing`/`device_signed` only fire when `TAILNET_LOCK_ENABLED=YES`, same as the rest of Tailnet Lock's behavior.
+- A failed delivery (Apprise instance unreachable, etc.) is logged as a `notification_failed` event on the `/debug` page rather than retried - it won't block or slow down polling.
 
 ### Background Polling
 

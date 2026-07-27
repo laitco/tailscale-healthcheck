@@ -10,6 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { StatusBadge } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { formatVersion, relativeTime, semverRank } from '@/lib/format'
 import { useNow } from '@/lib/use-now'
@@ -158,12 +159,19 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
               </TableCell>
               {lockEnabled && (
                 <TableCell>
-                  <StatusBadge
-                    ok={!d.tailnetLockError}
-                    trueText="Signed"
-                    falseText="Locked out"
-                    title={d.tailnetLockError || undefined}
-                  />
+                  <span className="inline-flex items-center gap-1.5">
+                    <StatusBadge
+                      ok={!d.tailnetLockError}
+                      trueText="Signed"
+                      falseText="Locked out"
+                      title={d.tailnetLockError || undefined}
+                    />
+                    {d.isLockSigner && (
+                      <Badge variant="outline" title="Tagged as a trusted Tailnet Lock signer">
+                        Signer
+                      </Badge>
+                    )}
+                  </span>
                 </TableCell>
               )}
               <TableCell className={cn('max-w-48 truncate text-muted-foreground')} title={(d.tags || []).join(', ')}>

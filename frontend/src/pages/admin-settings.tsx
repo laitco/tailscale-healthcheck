@@ -14,12 +14,15 @@ import type { SettingField, SettingsResponse } from '@/lib/types'
 
 type FieldDef = { name: string; label: string; unit?: string; help?: string; generatable?: boolean }
 
-const GROUP_ORDER = ['connection', 'thresholds', 'filters', 'general', 'logging', 'rate_limit', 'retry', 'poll'] as const
+const GROUP_ORDER = [
+  'connection', 'thresholds', 'filters', 'notifications', 'general', 'logging', 'rate_limit', 'retry', 'poll',
+] as const
 
 const GROUP_LABELS: Record<string, string> = {
   connection: 'Connection',
   thresholds: 'Health Thresholds',
   filters: 'Filters',
+  notifications: 'Notifications',
   general: 'General',
   logging: 'Logging',
   rate_limit: 'Rate Limiting',
@@ -31,6 +34,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   connection: "Fields sourced from an environment variable always take precedence and can't be edited here.",
   thresholds: 'Control when devices and the overall tailnet are considered healthy.',
   filters: 'Comma-separated glob patterns (e.g. tag:prod, *.example.com). Press Enter or comma to add an entry.',
+  notifications: 'Alert via an already-running Apprise API instance (apprise-api) - channel setup (Slack, email, ...) lives on that instance, not here.',
   general: 'Miscellaneous behavior settings.',
   logging: 'Application log verbosity.',
   rate_limit: 'Protect the API from excessive request volume.',
@@ -50,6 +54,11 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
       name: 'tailnet_lock_enabled',
       label: 'I use Tailnet Lock',
       help: 'When on, a device needing a Tailnet Lock signature counts as unhealthy, and the Lock status is shown on the devices table and device detail page. Off by default.',
+    },
+    {
+      name: 'lock_signer_tags',
+      label: 'Tailnet Lock signer tags',
+      help: "Devices with a matching tag are labeled \"Signer\" on the devices table/device detail page. There's no way to learn which devices are trusted signers from the Tailscale API itself, so this is admin-provided.",
     },
   ],
   thresholds: [
@@ -103,6 +112,17 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
     { name: 'exclude_key_type', label: 'Exclude key type' },
     { name: 'include_key_description', label: 'Include key description' },
     { name: 'exclude_key_description', label: 'Exclude key description' },
+  ],
+  notifications: [
+    { name: 'apprise_api_url', label: 'Apprise API URL', help: 'Base URL of your running apprise-api instance, e.g. http://apprise:8000.' },
+    { name: 'apprise_config_key', label: 'Apprise config key', help: "The config/tag on that instance to notify - POSTs to <url>/notify/<key>." },
+    { name: 'notification_events', label: 'Notify on', help: 'Only checked events actually send a notification. Off (unchecked) by default for all of them.' },
+    {
+      name: 'notify_include_tags',
+      label: 'Notify: include tags',
+      help: "Scopes which devices' transitions notify (device_unhealthy/device_healthy_again/device_needs_signing/device_signed only - global/poll events aren't device-scoped).",
+    },
+    { name: 'notify_exclude_tags', label: 'Notify: exclude tags' },
   ],
   general: [
     { name: 'timezone', label: 'Timezone' },
@@ -230,9 +250,21 @@ function SecretInput({
   )
 }
 
-const FILTER_FIELD_NAMES = new Set(
-  FIELDS_BY_GROUP.filters.map((f) => f.name),
-)
+const FILTER_FIELD_NAMES = new Set([
+  ...FIELDS_BY_GROUP.filters.map((f) => f.name),
+  'lock_signer_tags', 'notify_include_tags', 'notify_exclude_tags',
+])
+
+const NOTIFICATION_EVENT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'device_unhealthy', label: 'Device becomes unhealthy' },
+  { value: 'device_healthy_again', label: 'Device becomes healthy again' },
+  { value: 'key_expiring', label: 'Tailnet key expiring soon' },
+  { value: 'device_needs_signing', label: 'Device needs a Tailnet Lock signature' },
+  { value: 'device_signed', label: 'Device signed under Tailnet Lock' },
+  { value: 'global_unhealthy', label: 'Overall tailnet becomes unhealthy' },
+  { value: 'global_healthy_restored', label: 'Overall tailnet becomes healthy again' },
+  { value: 'poll_auth_error', label: "Tailscale API credentials aren't working" },
+]
 
 export default function AdminSettingsPage() {
   const { refresh } = useHealthContext()
@@ -337,6 +369,30 @@ export default function AdminSettingsPage() {
             ))}
           </SelectContent>
         </Select>
+      )
+    } else if (def.name === 'notification_events') {
+      const current = (typeof draftValue === 'string' ? draftValue : String(meta.value ?? ''))
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const toggle = (event: string) => {
+        const next = current.includes(event) ? current.filter((e) => e !== event) : [...current, event]
+        setDraftValue(def.name, next.join(','))
+      }
+      control = (
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          {NOTIFICATION_EVENT_OPTIONS.map((opt) => (
+            <label key={opt.value} className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={current.includes(opt.value)}
+                onChange={() => toggle(opt.value)}
+                disabled={disabled}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
       )
     } else if (meta.type === 'bool') {
       const checked = typeof draftValue === 'boolean' ? draftValue : Boolean(meta.value)

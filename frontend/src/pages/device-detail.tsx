@@ -4,6 +4,7 @@ import { ChevronLeft } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { fetchDeviceByIdentifier, ApiError } from '@/lib/api'
 import type { Device } from '@/lib/types'
 import NotFoundPage from '@/pages/not-found'
@@ -99,6 +100,11 @@ export default function DeviceDetailPage() {
                     title={device.tailnetLockError || undefined}
                   />
                   {device.tailnetLockError && <span className="text-xs text-muted-foreground">({device.tailnetLockError})</span>}
+                  {device.isLockSigner && (
+                    <Badge variant="outline" title="Tagged as a trusted Tailnet Lock signer">
+                      Signer
+                    </Badge>
+                  )}
                 </span>
               }
             />

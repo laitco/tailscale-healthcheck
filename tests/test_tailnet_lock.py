@@ -13,7 +13,7 @@ import pytz
 import dbstore
 
 
-def _load_healthcheck(database_path, tailnet_lock_enabled=False) -> types.ModuleType:
+def _load_healthcheck(database_path, tailnet_lock_enabled=False, lock_signer_tags="") -> types.ModuleType:
     here = os.path.dirname(__file__)
     root = os.path.abspath(os.path.join(here, os.pardir))
     module_path = os.path.join(root, "healthcheck.py")
@@ -27,6 +27,7 @@ def _load_healthcheck(database_path, tailnet_lock_enabled=False) -> types.Module
             "AUTH_TOKEN": "test-token",
             "DATABASE_PATH": str(database_path),
             "TAILNET_LOCK_ENABLED": "YES" if tailnet_lock_enabled else "NO",
+            "LOCK_SIGNER_TAGS": lock_signer_tags,
         })
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)  # type: ignore
@@ -36,13 +37,13 @@ def _load_healthcheck(database_path, tailnet_lock_enabled=False) -> types.Module
         os.environ.update(old_env)
 
 
-def _device(now, tailnet_lock_error=""):
+def _device(now, tailnet_lock_error="", tags=None):
     return {
         "id": "d1", "name": "signer.example.ts.net", "hostname": "signer",
         "os": "linux", "clientVersion": "1.98.0", "updateAvailable": False,
         "connectedToControl": True,
         "lastSeen": now.isoformat().replace("+00:00", "Z"),
-        "keyExpiryDisabled": True, "expires": None, "tags": [],
+        "keyExpiryDisabled": True, "expires": None, "tags": tags or [],
         "tailnetLockError": tailnet_lock_error,
     }
 
@@ -155,3 +156,33 @@ def test_tailnet_lock_enabled_default_is_off(tmp_path):
     dbstore.configure(str(tmp_path / "healthcheck.db"))
     dbstore.init_db()
     assert dbstore.get_setting_typed("tailnet_lock_enabled") is False
+
+
+def test_is_lock_signer_flag_set_when_tag_matches(tmp_path):
+    m = _load_healthcheck(tmp_path / "healthcheck.db", lock_signer_tags="lock-signer")
+    now = datetime.now(pytz.UTC)
+
+    devices = [_device(now, tags=["tag:lock-signer"])]
+    health_status, _ = m._compute_health_summary(devices)
+
+    assert health_status[0]["isLockSigner"] is True
+
+
+def test_is_lock_signer_flag_unset_when_no_tag_configured(tmp_path):
+    m = _load_healthcheck(tmp_path / "healthcheck.db", lock_signer_tags="")
+    now = datetime.now(pytz.UTC)
+
+    devices = [_device(now, tags=["tag:lock-signer"])]
+    health_status, _ = m._compute_health_summary(devices)
+
+    assert health_status[0]["isLockSigner"] is False
+
+
+def test_is_lock_signer_flag_false_for_non_matching_device(tmp_path):
+    m = _load_healthcheck(tmp_path / "healthcheck.db", lock_signer_tags="lock-signer")
+    now = datetime.now(pytz.UTC)
+
+    devices = [_device(now, tags=["tag:user-device"])]
+    health_status, _ = m._compute_health_summary(devices)
+
+    assert health_status[0]["isLockSigner"] is False

@@ -53,6 +53,12 @@ SETTINGS_REGISTRY = {
     # detail page - default off, so installs that don't use Tailnet Lock see
     # zero behavior change.
     "tailnet_lock_enabled": ("TAILNET_LOCK_ENABLED", "bool", False, None, "connection"),
+    # Comma-separated, wildcard-matched (fnmatch) tag patterns (see
+    # should_include_device()'s tag matching convention) identifying which
+    # devices are trusted Tailnet Lock signers. Purely a display label -
+    # there's no way to learn this from the Tailscale API itself (only the
+    # `tailscale lock status` CLI exposes it), so it's admin-provided.
+    "lock_signer_tags": ("LOCK_SIGNER_TAGS", "str", "", None, "connection"),
 
     # Health thresholds
     "online_threshold_minutes": ("ONLINE_THRESHOLD_MINUTES", "int", 5, None, "thresholds"),
@@ -117,6 +123,21 @@ SETTINGS_REGISTRY = {
     # table shown on /debug - this is high-volume, low-stakes activity log,
     # not the compliance-flavored audit_log, so it gets its own knob.
     "poller_log_retention_days": ("POLLER_LOG_RETENTION_DAYS", "int", 7, None, "poll"),
+
+    # Alerting via an externally-hosted Apprise API instance (not the apprise
+    # Python library - this app just POSTs to an already-running server, see
+    # notifier.py). Empty api_url/config_key (the default) means alerting is
+    # off; notification_events is a comma-separated subset of
+    # notifier.EVENT_TYPES chosen in the settings UI.
+    "apprise_api_url": ("APPRISE_API_URL", "str", "", None, "notifications"),
+    "apprise_config_key": ("APPRISE_CONFIG_KEY", "str", "", None, "notifications"),
+    "notification_events": ("NOTIFICATION_EVENTS", "str", "", None, "notifications"),
+    # Comma-separated, wildcard-matched tag patterns (same convention as
+    # include_tags/exclude_tags) scoping which devices' transitions actually
+    # notify. Only applies to the per-device event types - global_unhealthy/
+    # global_healthy_restored/poll_auth_error aren't device-scoped.
+    "notify_include_tags": ("NOTIFY_INCLUDE_TAGS", "str", "", None, "notifications"),
+    "notify_exclude_tags": ("NOTIFY_EXCLUDE_TAGS", "str", "", None, "notifications"),
 }
 
 # Device/key fields that trigger an audit_log row when changed. `last_seen`
@@ -325,6 +346,20 @@ def init_db():
                 ip TEXT PRIMARY KEY,
                 window_start INTEGER NOT NULL,
                 count INTEGER NOT NULL
+            );
+
+            -- One row per (entity_type, entity_id) tracking the healthy/
+            -- unhealthy status observed on the *previous* poll cycle, so the
+            -- notifier (notifier.py) can fire only on a transition, not on
+            -- every poll. Kept separate from devices/tailnet_keys (whose
+            -- rows get fully replaced each poll) so this survives across
+            -- upserts and worker restarts.
+            CREATE TABLE IF NOT EXISTS entity_health_state (
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                healthy INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (entity_type, entity_id)
             );
             """
         )
@@ -1411,3 +1446,41 @@ def purge_poller_log(retention_days: int = None):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
     with get_connection() as conn:
         conn.execute("DELETE FROM poller_log WHERE occurred_at < ?", (cutoff,))
+
+
+# ---------------------------------------------------------------------------
+# Entity health state (previous-cycle healthy/unhealthy, for notifier.py)
+# ---------------------------------------------------------------------------
+
+def get_health_state(entity_type: str) -> dict:
+    """Map of entity_id -> healthy (bool) as observed on the previous poll
+    cycle, for the given entity_type ("device" or "key")."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT entity_id, healthy FROM entity_health_state WHERE entity_type = ?", (entity_type,),
+        ).fetchall()
+    return {r["entity_id"]: bool(r["healthy"]) for r in rows}
+
+
+def set_health_state(entity_type: str, entity_id: str, healthy: bool):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO entity_health_state (entity_type, entity_id, healthy, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(entity_type, entity_id) DO UPDATE SET healthy=excluded.healthy, updated_at=excluded.updated_at",
+            (entity_type, entity_id, int(healthy), _now_iso()),
+        )
+
+
+def prune_health_state(entity_type: str, keep_ids):
+    """Drop stored state for entities of `entity_type` no longer present
+    (removed devices/keys), so they don't linger forever."""
+    keep_ids = list(keep_ids)
+    with get_connection() as conn:
+        if not keep_ids:
+            conn.execute("DELETE FROM entity_health_state WHERE entity_type = ?", (entity_type,))
+            return
+        placeholders = ", ".join("?" for _ in keep_ids)
+        conn.execute(
+            f"DELETE FROM entity_health_state WHERE entity_type = ? AND entity_id NOT IN ({placeholders})",
+            (entity_type, *keep_ids),
+        )
