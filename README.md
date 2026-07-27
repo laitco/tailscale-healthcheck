@@ -42,6 +42,8 @@
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
   - [Filter Configuration Examples](#filter-configuration-examples)
 - [🐳 Running with Docker](#-running-with-docker)
+  - [Upgrading](#upgrading-recreate-the-container-dont-just-restart-it)
+  - [Storage & permissions](#storage--permissions)
   - [Run with Docker Compose](#run-with-docker-compose)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
@@ -511,6 +513,89 @@ EXCLUDE_TAG_UPDATE_HEALTHY="test*,dev*"
 ## 🐳 Running with Docker
 
 Note: The container runs as a non-root user (`appuser`, UID 10001) following least-privilege best practices. It binds to the non-privileged port `5000`. If you need to expose a different external port, use Docker's port mapping (e.g., `-p 8080:5000`).
+
+### Upgrading: recreate the container, don't just restart it
+
+Pulling a new image is not enough — **recreate the container** so it picks up the image's current
+`ENTRYPOINT`, `CMD`, `USER` and healthcheck:
+
+```bash
+docker compose pull && docker compose up -d      # compose recreates automatically
+# or, for plain docker run:
+docker pull laitco/tailscale-healthcheck:latest
+docker rm -f tailscale-healthcheck
+docker run -d --name tailscale-healthcheck ...   # same flags as before
+```
+
+Your data lives in the `/data` volume, not the container — so recreating it loses nothing **as long as
+that volume is a named volume or a bind mount** (`-v tailscale-healthcheck-data:/data` or
+`-v /host/path:/data`), which is how both the Compose file and the documented `docker run` commands
+set it up.
+
+> ⚠️ **If you started the container with no `-v` at all**, the image's `VOLUME ["/data"]` gave it an
+> *anonymous* volume. `docker rm` + `docker run` attaches a **brand-new** anonymous volume, and your
+> settings, users and history are left behind in the old one. Check before removing the container:
+>
+> ```bash
+> docker inspect tailscale-healthcheck --format '{{range .Mounts}}{{.Type}} {{.Name}}{{.Source}} -> {{.Destination}}{{end}}'
+> ```
+>
+> An empty `Name`/`Source` with type `volume` and a long hex id means it's anonymous. Either reattach
+> it explicitly (`-v <that-volume-id>:/data`) or, better, migrate to a named volume first:
+>
+> ```bash
+> docker run --rm -v <old-anonymous-volume-id>:/from -v tailscale-healthcheck-data:/to \
+>   alpine sh -c 'cp -a /from/. /to/'
+> ```
+
+> **If you manage containers through a UI** (Portainer, Komodo, Dockge, …), check that it hasn't
+> carried an **Entrypoint**, **Command** or **User** override forward from the previous container.
+> Several of them copy the whole old configuration onto the new image when you redeploy, which
+> pins settings that were only ever meant to be the image's own defaults.
+>
+> Symptom: the container crash-loops with
+> `sqlite3.OperationalError: unable to open database file`, raised from inside
+> `gunicorn_config.py`.
+>
+> Why: a `User` override starts the container as a non-root user, so the entrypoint can neither take
+> ownership of `/data` nor drop privileges — and an `Entrypoint` override bypasses
+> `docker-entrypoint.sh` entirely, so you get the raw SQLite error instead of a message explaining
+> the problem. Clearing an `Entrypoint` override *alone* is not enough either: the container will
+> then start and run **as root**, silently giving up its privilege dropping.
+>
+> Fix: leave **Entrypoint, Command and User empty** so the image supplies them. Recreating the
+> container from scratch and re-adding only your own settings (tailnet domain, credentials,
+> timezone, port, volume) is the most reliable way to clear a stale definition.
+
+### Storage & permissions
+
+The app keeps everything (settings, users, device/key snapshots, audit log) in a SQLite database
+under `/data`, so that directory has to be writable by the container. This is handled automatically
+— **you should not normally need to configure anything**:
+
+| How you mount `/data` | What happens |
+|---|---|
+| Docker **named volume** (recommended) | Docker seeds it from the image; works as-is. |
+| **Bind mount** on a normal Linux filesystem | The container starts as root, takes ownership, then drops to the unprivileged `appuser` (uid `10001`). |
+| **Bind mount** on **CIFS/SMB or NFS** (typical NAS setup) | `chown` is refused there — ownership comes from the mount options — so the container instead runs *as the uid the share is mounted as*, and logs a `NOTE` saying so. |
+| Hardened runtime (Kubernetes `runAsUser`, `docker run --user`) | Runs as the uid you specified, unchanged. |
+
+If none of those can write, the container **fails immediately with an explanation** instead of
+crash-looping on an opaque `sqlite3.OperationalError: unable to open database file`.
+
+**`PUID` / `PGID`** (default `10001` / `999`) override the whole thing when you want a specific uid —
+for example to make the database files owned by your own user on a NAS:
+
+```bash
+docker run -e PUID=1000 -e PGID=1000 -v /volume1/docker/tailscale-healthcheck:/data ...
+```
+
+Set explicitly, they are honoured exactly: the container will fail with a clear error rather than
+quietly running as some other user.
+
+> The image's own user is uid `10001` rather than the more familiar `1000` deliberately — it's a
+> reserved system-range id, so it can't collide with a real account on the host. You do not need to
+> match it; the table above means the container adapts to your storage, not the other way round.
 
 ### Run with Docker Compose
 
