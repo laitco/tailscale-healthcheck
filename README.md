@@ -527,7 +527,26 @@ docker rm -f tailscale-healthcheck
 docker run -d --name tailscale-healthcheck ...   # same flags as before
 ```
 
-Your data lives in the `/data` volume, not the container, so recreating it loses nothing.
+Your data lives in the `/data` volume, not the container — so recreating it loses nothing **as long as
+that volume is a named volume or a bind mount** (`-v tailscale-healthcheck-data:/data` or
+`-v /host/path:/data`), which is how both the Compose file and the documented `docker run` commands
+set it up.
+
+> ⚠️ **If you started the container with no `-v` at all**, the image's `VOLUME ["/data"]` gave it an
+> *anonymous* volume. `docker rm` + `docker run` attaches a **brand-new** anonymous volume, and your
+> settings, users and history are left behind in the old one. Check before removing the container:
+>
+> ```bash
+> docker inspect tailscale-healthcheck --format '{{range .Mounts}}{{.Type}} {{.Name}}{{.Source}} -> {{.Destination}}{{end}}'
+> ```
+>
+> An empty `Name`/`Source` with type `volume` and a long hex id means it's anonymous. Either reattach
+> it explicitly (`-v <that-volume-id>:/data`) or, better, migrate to a named volume first:
+>
+> ```bash
+> docker run --rm -v <old-anonymous-volume-id>:/from -v tailscale-healthcheck-data:/to \
+>   alpine sh -c 'cp -a /from/. /to/'
+> ```
 
 > **If you manage containers through a UI** (Portainer, Komodo, Dockge, …), check that it hasn't
 > carried an **Entrypoint**, **Command** or **User** override forward from the previous container.

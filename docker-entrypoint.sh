@@ -27,11 +27,13 @@ set -e
 DEFAULT_UID=10001   # appuser, created in the Dockerfile
 DEFAULT_GID=999     # app
 
-# The image sets PUID/PGID as ENV defaults, so "did the operator choose this?"
-# can't be answered by emptiness alone - compare against the known defaults.
-PUID_EXPLICIT=""
-[ "${PUID:-$DEFAULT_UID}" = "$DEFAULT_UID" ] || PUID_EXPLICIT=1
-[ "${PGID:-$DEFAULT_GID}" = "$DEFAULT_GID" ] || PUID_EXPLICIT=1
+# Presence, not value, marks an operator override - the Dockerfile deliberately
+# does not declare PUID/PGID as ENV for exactly this reason. Comparing against
+# the defaults instead would make an explicit `-e PUID=10001` look unset, and
+# the owner-adoption fallback below would then silently ignore it.
+ID_OVERRIDE_SET=""
+[ -z "${PUID+set}" ] || ID_OVERRIDE_SET=1
+[ -z "${PGID+set}" ] || ID_OVERRIDE_SET=1
 PUID="${PUID:-$DEFAULT_UID}"
 PGID="${PGID:-$DEFAULT_GID}"
 
@@ -40,16 +42,56 @@ PGID="${PGID:-$DEFAULT_GID}"
 DB_PATH="${DATABASE_PATH:-/data/healthcheck.db}"
 DB_DIR="$(dirname "$DB_PATH")"
 
+# DATABASE_PATH is operator-supplied, and dirname of a bare "/healthcheck.db"
+# is "/". Taking ownership of the resolved directory must never be able to
+# sweep the filesystem root or a system directory, so refuse outright rather
+# than trying to make such a path work.
+case "$DB_DIR" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib32|/lib64|/libx32|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/usr|/var|/app)
+        echo "FATAL: DATABASE_PATH=$DB_PATH puts the database directly in $DB_DIR." >&2
+        echo "       Refusing to manage ownership of a system directory." >&2
+        echo "       Point DATABASE_PATH at a dedicated directory, e.g." >&2
+        echo "       DATABASE_PATH=/data/healthcheck.db" >&2
+        exit 1
+        ;;
+    /*) ;;
+    *)
+        echo "FATAL: DATABASE_PATH=$DB_PATH must be an absolute path." >&2
+        exit 1
+        ;;
+esac
+
 # True if uid:gid can create a file in DB_DIR. An actual write, not a mode
 # inspection - only a real touch accounts for NFS squashing, read-only mounts,
 # ACLs and friends.
+#
+# Root only: switching user requires gosu, which requires root. The non-root
+# case has its own can_write_now() rather than silently ignoring the arguments.
 can_write_as() {
-    _probe="$DB_DIR/.write-probe.$$"
-    if [ "$(id -u)" = "0" ]; then
-        gosu "$1:$2" sh -c "touch '$_probe' 2>/dev/null && rm -f '$_probe' && echo yes" 2>/dev/null || true
-    else
-        sh -c "touch '$_probe' 2>/dev/null && rm -f '$_probe' && echo yes" 2>/dev/null || true
-    fi
+    # The probe path is passed as a positional argument rather than spliced
+    # into the shell program: DATABASE_PATH is operator-supplied, so a quote in
+    # it would otherwise break the quoting (rejecting a perfectly writable
+    # directory) and a crafted value could inject commands into the inner sh.
+    gosu "$1:$2" sh -c 'touch "$1" 2>/dev/null && rm -f "$1" && echo yes' sh "$DB_DIR/.write-probe.$$" 2>/dev/null || true
+}
+
+# Same probe as the current user, for when we're already non-root and cannot
+# switch to any other uid to test on its behalf.
+can_write_now() {
+    sh -c 'touch "$1" 2>/dev/null && rm -f "$1" && echo yes' sh "$DB_DIR/.write-probe.$$" 2>/dev/null || true
+}
+
+# Take ownership of the database directory and the app's own files only.
+# A recursive chown would rewrite ownership of anything else sharing the
+# directory, which matters as soon as DATABASE_PATH points somewhere the app
+# doesn't exclusively own. These are the only paths the app ever writes.
+take_ownership() {
+    chown "$1:$2" "$DB_DIR" 2>/dev/null || true
+    for _f in "$DB_PATH" "$DB_PATH-wal" "$DB_PATH-shm" "$DB_DIR/poller.lock"; do
+        if [ -e "$_f" ]; then
+            chown "$1:$2" "$_f" 2>/dev/null || true
+        fi
+    done
 }
 
 fail_unwritable() {
@@ -108,14 +150,14 @@ fi
 # Already non-root (Kubernetes runAsUser, docker run --user, rootless): we
 # can neither chown nor switch user, so this uid is the only candidate.
 if [ "$(id -u)" != "0" ]; then
-    [ "$(can_write_as "$(id -u)" "$(id -g)")" = "yes" ] || fail_unwritable "$(id -u)"
+    [ "$(can_write_now)" = "yes" ] || fail_unwritable "$(id -u)"
     exec "$@"
 fi
 
 # Best effort; expected to fail on CIFS/NFS, which is not fatal on its own.
-chown -R "$PUID:$PGID" "$DB_DIR" 2>/dev/null || true
+take_ownership "$PUID" "$PGID"
 
-if [ -n "$PUID_EXPLICIT" ]; then
+if [ -n "$ID_OVERRIDE_SET" ]; then
     # Explicitly configured: honour it exactly, or fail - never silently run as
     # a different user than the operator asked for.
     [ "$(can_write_as "$PUID" "$PGID")" = "yes" ] || fail_unwritable "$PUID"
