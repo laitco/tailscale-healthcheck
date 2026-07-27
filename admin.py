@@ -21,6 +21,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 
 import dbstore
 import poller
+import notifier
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -488,6 +489,25 @@ def api_generate_token():
     once they POST it to /admin/api/settings themselves.
     """
     return jsonify({"token": secrets.token_urlsafe(32)})
+
+
+@admin_bp.route("/api/notifications/test", methods=["POST"])
+@login_required
+def api_notifications_test():
+    """Send a one-off test notification via notifier.test(), bypassing the
+    notification_events/tag gating. Accepts optional apprise_api_url/
+    apprise_notification_urls/apprise_bearer_token overrides in the request
+    body, so the settings page can test unsaved draft values directly
+    instead of forcing a save first."""
+    data = request.get_json(silent=True) or {}
+    cfg = dbstore.get_settings_typed(notifier.NOTIFICATION_SETTINGS)
+    for field in ("apprise_api_url", "apprise_notification_urls", "apprise_bearer_token"):
+        if field in data:
+            cfg[field] = str(data[field])
+    ok, error = notifier.test(cfg)
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify({"ok": True})
 
 
 @admin_bp.route("/api/poll-now", methods=["POST"])

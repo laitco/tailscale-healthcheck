@@ -107,15 +107,11 @@ export default function OverviewPage() {
           value={metrics.global_healthy ? 'Healthy' : 'Issues'}
           subtitle={`${metrics.counter_healthy_false} issue${metrics.counter_healthy_false === 1 ? '' : 's'} · trend below`}
           ok={metrics.global_healthy}
-          // Plot the *issues* count, not the healthy count - the headline
-          // value here is framed as "Healthy"/"Issues", so the trend must
-          // move in the same direction as that framing (up = more issues)
-          // or a device recovering (issues count going DOWN) visually reads
-          // as the chart "getting worse" even though nothing did. The other
-          // tiles below plot their own positive count (e.g. "X / Y online")
-          // where up-is-good already matches their headline number, so they
-          // don't have this ambiguity.
-          trend={trend((e) => e.counter_healthy_false)}
+          // Plot the positive (healthy) count, same convention as every
+          // other tile below (up = good) - keeps all trend charts reading
+          // the same way at a glance, even though the headline above is
+          // framed as "Healthy"/"Issues" rather than a raw count.
+          trend={trend((e) => e.counter_healthy_true)}
           trendTimestamps={timestamps}
           trendTimezone={timezone}
         />

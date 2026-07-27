@@ -1,14 +1,18 @@
-"""Alerting via an externally-hosted Apprise API instance.
+"""Alerting via an externally-hosted Apprise API instance's *stateless*
+endpoint (https://github.com/caronc/apprise-api).
 
-This does NOT bundle the `apprise` Python library - it just POSTs to an
-already-running Apprise API server (https://github.com/caronc/apprise-api)
-at `{APPRISE_API_URL}/notify/{APPRISE_CONFIG_KEY}`, so channel configuration
-(Slack, Discord, email, ...) lives entirely on that server, not here.
+This does NOT bundle the `apprise` Python library, and does NOT rely on any
+server-side persistent config - each request carries the actual Apprise
+service URLs (e.g. tgram://bottoken/ChatID, mailto://user:pass@host) in
+`apprise_notification_urls`, POSTed straight to `{APPRISE_API_URL}/notify`.
+An optional `apprise_bearer_token` is only for authenticating to the Apprise
+API instance itself, if it requires that.
 
 notify() is the single entry point poller.py calls after each poll cycle's
 health computation; it's a no-op (returns skipped) unless both Apprise is
 configured and the event type is one of the admin-selected
-notification_events, keeping this fully inert by default.
+notification_events, keeping this fully inert by default. test() bypasses
+the event/tag gating for the settings page's "Send test notification" button.
 """
 import fnmatch
 
@@ -29,7 +33,7 @@ EVENT_TYPES = (
 )
 
 NOTIFICATION_SETTINGS = (
-    "apprise_api_url", "apprise_config_key", "notification_events",
+    "apprise_api_url", "apprise_notification_urls", "apprise_bearer_token", "notification_events",
     "notify_include_tags", "notify_exclude_tags",
 )
 
@@ -40,7 +44,7 @@ def get_enabled_events(raw: str) -> set:
 
 
 def is_configured(cfg: dict) -> bool:
-    return bool(cfg.get("apprise_api_url", "").strip() and cfg.get("apprise_config_key", "").strip())
+    return bool(cfg.get("apprise_api_url", "").strip() and cfg.get("apprise_notification_urls", "").strip())
 
 
 def tag_matches(device_tags, include_csv: str, exclude_csv: str) -> bool:
@@ -74,8 +78,13 @@ def is_lock_signer(device_tags, lock_signer_tags_csv: str) -> bool:
 
 
 def _send(cfg: dict, title: str, body: str):
-    url = f"{cfg['apprise_api_url'].rstrip('/')}/notify/{cfg['apprise_config_key']}"
-    response = requests.post(url, json={"title": title, "body": body}, timeout=10)
+    url = f"{cfg['apprise_api_url'].rstrip('/')}/notify"
+    headers = {}
+    bearer_token = (cfg.get("apprise_bearer_token") or "").strip()
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    payload = {"urls": cfg["apprise_notification_urls"], "title": title, "body": body}
+    response = requests.post(url, json=payload, headers=headers, timeout=10)
     response.raise_for_status()
 
 
@@ -92,6 +101,19 @@ def notify(event_type: str, title: str, body: str, cfg: dict, device_tags=None):
         return False, "tag_filtered"
     try:
         _send(cfg, title, body)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def test(cfg: dict):
+    """Send a one-off test notification, bypassing notification_events/tag
+    gating (used by the settings page's "Send test notification" button) -
+    still requires apprise_api_url + apprise_notification_urls to be set."""
+    if not is_configured(cfg):
+        return False, "not_configured"
+    try:
+        _send(cfg, "Tailscale Healthcheck test notification", "If you can see this, your Apprise setup works.")
         return True, None
     except Exception as e:
         return False, str(e)

@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import types
+from unittest.mock import patch
 
 import pytest
 
@@ -483,3 +484,54 @@ def test_health_endpoint_token_via_admin_settings(configured, monkeypatch):
     # Clearing it back to empty re-opens /health.
     client.post("/admin/api/settings", json={"health_endpoint_token": ""})
     assert anon.get("/health").status_code == 200
+
+
+def test_notifications_test_requires_login(configured):
+    client = configured.app.test_client()
+    resp = client.post("/admin/api/notifications/test", json={})
+    assert resp.status_code == 401
+
+
+def test_notifications_test_uses_saved_settings_when_no_overrides(configured):
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    configured.dbstore.set_setting("apprise_api_url", "http://apprise.example.com", source="db")
+    configured.dbstore.set_setting("apprise_notification_urls", "tgram://bottoken/ChatID", source="db")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    with patch("admin.notifier.test", return_value=(True, None)) as mock_test:
+        resp = client.post("/admin/api/notifications/test", json={})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True}
+        cfg = mock_test.call_args[0][0]
+        assert cfg["apprise_api_url"] == "http://apprise.example.com"
+        assert cfg["apprise_notification_urls"] == "tgram://bottoken/ChatID"
+
+
+def test_notifications_test_applies_unsaved_overrides(configured):
+    """Draft values from the settings form (not yet saved) must be tested
+    as-is, without requiring a save first."""
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    with patch("admin.notifier.test", return_value=(True, None)) as mock_test:
+        resp = client.post("/admin/api/notifications/test", json={
+            "apprise_api_url": "http://draft.example.com",
+            "apprise_notification_urls": "mailto://user:pass@host",
+        })
+        assert resp.status_code == 200
+        cfg = mock_test.call_args[0][0]
+        assert cfg["apprise_api_url"] == "http://draft.example.com"
+        assert cfg["apprise_notification_urls"] == "mailto://user:pass@host"
+
+
+def test_notifications_test_returns_400_on_failure(configured):
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    with patch("admin.notifier.test", return_value=(False, "connection refused")):
+        resp = client.post("/admin/api/notifications/test", json={})
+        assert resp.status_code == 400
+        assert resp.get_json() == {"ok": False, "error": "connection refused"}

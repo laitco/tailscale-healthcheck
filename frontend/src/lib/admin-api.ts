@@ -114,6 +114,10 @@ export function pollNow(): Promise<{ ok: boolean; last_polled_at: string | null 
   return request('/admin/api/poll-now', { method: 'POST' })
 }
 
+export function testNotification(overrides: Record<string, string>): Promise<{ ok: true }> {
+  return request('/admin/api/notifications/test', { method: 'POST', body: JSON.stringify(overrides) })
+}
+
 export function fetchUsers(): Promise<{ users: AdminUser[] }> {
   return request('/admin/api/users')
 }

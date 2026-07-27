@@ -124,13 +124,19 @@ SETTINGS_REGISTRY = {
     # not the compliance-flavored audit_log, so it gets its own knob.
     "poller_log_retention_days": ("POLLER_LOG_RETENTION_DAYS", "int", 7, None, "poll"),
 
-    # Alerting via an externally-hosted Apprise API instance (not the apprise
-    # Python library - this app just POSTs to an already-running server, see
-    # notifier.py). Empty api_url/config_key (the default) means alerting is
-    # off; notification_events is a comma-separated subset of
-    # notifier.EVENT_TYPES chosen in the settings UI.
+    # Alerting via an externally-hosted Apprise API instance's *stateless*
+    # /notify endpoint (not the apprise Python library, and no server-side
+    # config key needed - see notifier.py). Empty api_url/notification_urls
+    # (the default) means alerting is off; notification_events is a
+    # comma-separated subset of notifier.EVENT_TYPES chosen in the settings UI.
     "apprise_api_url": ("APPRISE_API_URL", "str", "", None, "notifications"),
-    "apprise_config_key": ("APPRISE_CONFIG_KEY", "str", "", None, "notifications"),
+    # One or more Apprise service URLs (comma-separated), e.g.
+    # tgram://bottoken/ChatID, mailto://user:pass@host, slack://... - passed
+    # straight through to the Apprise API's stateless endpoint each time.
+    "apprise_notification_urls": ("APPRISE_NOTIFICATION_URLS", "str", "", None, "notifications"),
+    # Optional: only needed if the Apprise API instance itself requires
+    # bearer-token auth (APPRISE_ADMIN_TOKEN / similar on that server).
+    "apprise_bearer_token": ("APPRISE_BEARER_TOKEN", "str", "", None, "notifications"),
     "notification_events": ("NOTIFICATION_EVENTS", "str", "", None, "notifications"),
     # Comma-separated, wildcard-matched tag patterns (same convention as
     # include_tags/exclude_tags) scoping which devices' transitions actually
@@ -162,6 +168,9 @@ SECRET_SETTINGS = {
     "auth_token", "oauth_client_secret", "health_endpoint_token", "secret_key",
     # Can embed backend credentials, e.g. redis://:password@host/db.
     "rate_limit_storage_url",
+    # Stateless Apprise notification URLs commonly embed credentials
+    # themselves, e.g. tgram://bottoken/ChatID or mailto://user:pass@host.
+    "apprise_notification_urls", "apprise_bearer_token",
 }
 _REDACTED = "[redacted]"
 

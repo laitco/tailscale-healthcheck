@@ -249,8 +249,9 @@ The application is configured using environment variables:
 | `TAILNET_LOCK_ENABLED`      | `NO`         | Explicit opt-in: set to `YES` if you use [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock). Off by default, so a device needing a signature has no effect on health unless you confirm you use it. Also settable from the setup wizard or `/admin/settings`. |
 | `GLOBAL_LOCK_HEALTHY_THRESHOLD`  | `100`        | The threshold for total Tailnet Lock health, only relevant when `TAILNET_LOCK_ENABLED=YES` (a device needing a signature is unhealthy). |
 | `LOCK_SIGNER_TAGS`   | `""`              | Comma-separated, wildcard tag patterns labeling which devices are trusted Tailnet Lock signers (a "Signer" badge on the devices table/device detail page) - admin-provided, since the Tailscale API has no endpoint for this (only the `tailscale lock status` CLI does). |
-| `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_CONFIG_KEY`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance. |
-| `APPRISE_CONFIG_KEY` | `""`              | The config/tag on that Apprise instance to notify - POSTs to `<APPRISE_API_URL>/notify/<APPRISE_CONFIG_KEY>`. |
+| `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_NOTIFICATION_URLS`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance's stateless endpoint. |
+| `APPRISE_NOTIFICATION_URLS` | `""`       | One or more Apprise service URLs (comma-separated), e.g. `tgram://bottoken/ChatID`, `mailto://user:pass@host`, `slack://...` - sent straight through on every notification, no server-side config needed. |
+| `APPRISE_BEARER_TOKEN` | `""`            | Optional - only if the Apprise API instance itself requires bearer-token auth. Unrelated to the notification URLs above. |
 | `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`. Only listed events actually notify; empty means none do. |
 | `NOTIFY_INCLUDE_TAGS`| `""`              | Comma-separated, wildcard tag patterns scoping which devices' transitions notify (the four `device_*`/`key_expiring`... events above that are per-device; global/poll events aren't device-scoped, so this doesn't affect them). |
 | `NOTIFY_EXCLUDE_TAGS`| `""`              | Same, but exclude. `NOTIFY_INCLUDE_TAGS` takes precedence if both are set. |
@@ -303,12 +304,13 @@ Notes:
 
 ### Notifications
 
-- Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance - this app POSTs `{title, body}` to `<APPRISE_API_URL>/notify/<APPRISE_CONFIG_KEY>` after each poll cycle, it does not bundle the `apprise` Python library, so channel setup (Slack, Discord, email, ...) lives entirely on that instance.
-- Off by default: leave `APPRISE_API_URL`/`APPRISE_CONFIG_KEY` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
+- Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance's *stateless* endpoint - this app POSTs `{urls, title, body}` to `<APPRISE_API_URL>/notify` after each poll cycle. It does not bundle the `apprise` Python library and needs no server-side config: `APPRISE_NOTIFICATION_URLS` carries the actual Apprise service URL(s) (e.g. `tgram://`, `mailto://`, `slack://`) directly.
+- Off by default: leave `APPRISE_API_URL`/`APPRISE_NOTIFICATION_URLS` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
 - Fires once per *transition*, not on every poll cycle while a condition persists - e.g. a device staying unhealthy for an hour notifies once, not every `POLL_INTERVAL_SECONDS`. Nothing notifies on a device/key's first-ever appearance (avoids a notification storm on rollout).
 - `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, and `poll_auth_error` aren't device-scoped and always notify regardless of these filters.
 - `device_needs_signing`/`device_signed` only fire when `TAILNET_LOCK_ENABLED=YES`, same as the rest of Tailnet Lock's behavior.
 - A failed delivery (Apprise instance unreachable, etc.) is logged as a `notification_failed` event on the `/debug` page rather than retried - it won't block or slow down polling.
+- A "Send test notification" button on `/admin/settings` fires a one-off test through `POST /admin/api/notifications/test`, bypassing `NOTIFICATION_EVENTS`/tag filtering - it uses whatever's currently in the form (even unsaved), falling back to the saved value for any field left blank.
 
 ### Background Polling
 

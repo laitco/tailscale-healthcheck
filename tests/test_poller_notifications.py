@@ -13,7 +13,8 @@ import poller  # noqa: E402
 
 CFG = {
     "apprise_api_url": "http://apprise.example.com",
-    "apprise_config_key": "key",
+    "apprise_notification_urls": "tgram://bottoken/ChatID",
+    "apprise_bearer_token": "",
     "notification_events": ",".join([
         "device_unhealthy", "device_healthy_again", "device_needs_signing", "device_signed",
         "key_expiring", "global_unhealthy", "global_healthy_restored",
