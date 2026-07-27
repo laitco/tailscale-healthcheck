@@ -121,6 +121,8 @@ Returns the health status of all devices.
       "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
       "key_healthy": true,
       "key_days_to_expire": 25,
+      "tailnetLockError": "",
+      "lock_healthy": true,
       "healthy": true,
       "tags": ["user-device", "admin-device"]
     }
@@ -134,13 +136,17 @@ Returns the health status of all devices.
     "counter_key_healthy_false": 0,
     "counter_update_healthy_true": 1,
     "counter_update_healthy_false": 0,
+    "counter_lock_healthy_true": 1,
+    "counter_lock_healthy_false": 0,
     "global_key_healthy": true,
     "global_online_healthy": true,
     "global_healthy": true,
-    "global_update_healthy": true
+    "global_update_healthy": true,
+    "global_lock_healthy": true
   }
 }
 ```
+`tailnetLockError` reflects the Tailscale API's own device data regardless of app configuration: empty unless the tailnet actually has [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock) enabled and that device's node-key signature is missing/invalid. `lock_healthy` (and therefore `healthy`), on the other hand, only reacts to a non-empty `tailnetLockError` once `TAILNET_LOCK_ENABLED=YES` is set - by default it's always `true`. There's no way to determine *which* devices are the tailnet's trusted signing nodes via the public API (that's only exposed by the `tailscale lock status` CLI, not this HTTP API) - this app can only report whether a given device still needs to be signed.
 
 Full settings (including secrets, masked) are no longer embeddable in this response - view/edit them at `/admin/settings` (login required) or browse `GET /admin/api/settings` instead.
 
@@ -235,6 +241,8 @@ The application is configured using environment variables:
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health.                             |
 | `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status. Example: `YES`                             |
+| `TAILNET_LOCK_ENABLED`      | `NO`         | Explicit opt-in: set to `YES` if you use [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock). Off by default, so a device needing a signature has no effect on health unless you confirm you use it. Also settable from the setup wizard or `/admin/settings`. |
+| `GLOBAL_LOCK_HEALTHY_THRESHOLD`  | `100`        | The threshold for total Tailnet Lock health, only relevant when `TAILNET_LOCK_ENABLED=YES` (a device needing a signature is unhealthy). |
 | `PORT`               | `5000`            | The port the application runs on. Process bootstrap only - not part of the settings registry, not editable via `/admin/settings`. |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |

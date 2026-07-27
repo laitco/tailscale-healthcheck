@@ -259,6 +259,13 @@ def api_setup():
     if api_base_url is not None and dbstore.get_setting_meta("api_base_url").get("source") != "env":
         dbstore.set_setting("api_base_url", str(api_base_url).strip().rstrip("/"), source="db", actor="setup")
 
+    tailnet_lock_enabled = data.get("tailnet_lock_enabled")
+    if tailnet_lock_enabled is not None and dbstore.get_setting_meta("tailnet_lock_enabled").get("source") != "env":
+        dbstore.set_setting(
+            "tailnet_lock_enabled", dbstore.encode_setting_value("tailnet_lock_enabled", tailnet_lock_enabled),
+            source="db", actor="setup",
+        )
+
     if not dbstore.has_any_user():
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))

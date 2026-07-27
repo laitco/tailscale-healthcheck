@@ -46,6 +46,13 @@ SETTINGS_REGISTRY = {
     # curl commands and "Try it" calls. Blank means "use relative URLs /
     # derive from the current request", handled at the point of use.
     "api_base_url": ("API_BASE_URL", "str", "", None, "connection"),
+    # Explicit opt-in switch: even though tailnetLockError is only populated
+    # by the Tailscale API when Tailnet Lock is actually enabled on the
+    # tailnet, an admin still has to confirm "I use Tailnet Lock" before it
+    # factors into health at all, or shows up on the devices table/device
+    # detail page - default off, so installs that don't use Tailnet Lock see
+    # zero behavior change.
+    "tailnet_lock_enabled": ("TAILNET_LOCK_ENABLED", "bool", False, None, "connection"),
 
     # Health thresholds
     "online_threshold_minutes": ("ONLINE_THRESHOLD_MINUTES", "int", 5, None, "thresholds"),
@@ -56,6 +63,7 @@ SETTINGS_REGISTRY = {
     "global_key_healthy_threshold": ("GLOBAL_KEY_HEALTHY_THRESHOLD", "int", 100, None, "thresholds"),
     "global_update_healthy_threshold": ("GLOBAL_UPDATE_HEALTHY_THRESHOLD", "int", 100, None, "thresholds"),
     "update_healthy_is_included_in_health": ("UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH", "bool", False, None, "thresholds"),
+    "global_lock_healthy_threshold": ("GLOBAL_LOCK_HEALTHY_THRESHOLD", "int", 100, None, "thresholds"),
 
     # Device filters (comma-separated, wildcards allowed)
     "include_os": ("INCLUDE_OS", "str", "", None, "filters"),
@@ -121,6 +129,7 @@ SETTINGS_REGISTRY = {
 DEVICE_AUDIT_FIELDS = (
     "name", "hostname", "os", "tags", "client_version",
     "update_available", "key_expiry_disabled", "expires", "connected_to_control",
+    "tailnet_lock_error",
 )
 KEY_AUDIT_FIELDS = ("description", "key_type", "capabilities", "expires")
 
@@ -244,6 +253,7 @@ def init_db():
                 key_expiry_disabled INTEGER,
                 expires TEXT,
                 tags TEXT,
+                tailnet_lock_error TEXT,
                 raw_json TEXT NOT NULL,
                 first_seen_at TEXT NOT NULL,
                 last_polled_at TEXT NOT NULL
@@ -326,6 +336,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
         if "totp_enabled" not in existing_columns:
             conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
+        # devices table predates tailnet_lock_error - add it for existing databases.
+        existing_device_columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+        if "tailnet_lock_error" not in existing_device_columns:
+            conn.execute("ALTER TABLE devices ADD COLUMN tailnet_lock_error TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -945,6 +959,7 @@ def _device_row_to_api_dict(row) -> dict:
         "keyExpiryDisabled": bool(row["key_expiry_disabled"]),
         "expires": row["expires"],
         "tags": tags,
+        "tailnetLockError": row["tailnet_lock_error"] or "",
     }
 
 
@@ -965,6 +980,7 @@ def _device_diff_fields(device: dict) -> dict:
         "key_expiry_disabled": bool(device.get("keyExpiryDisabled", False)),
         "expires": device.get("expires"),
         "connected_to_control": _bool_or_none(device.get("connectedToControl")),
+        "tailnet_lock_error": device.get("tailnetLockError") or "",
     }
 
 
@@ -987,14 +1003,14 @@ def upsert_devices(devices: list):
                 conn.execute(
                     "INSERT INTO devices (device_id, name, hostname, os, client_version, "
                     "update_available, connected_to_control, last_seen, key_expiry_disabled, "
-                    "expires, tags, raw_json, first_seen_at, last_polled_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "expires, tags, tailnet_lock_error, raw_json, first_seen_at, last_polled_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         device_id, fields["name"], fields["hostname"], fields["os"],
                         fields["client_version"], int(fields["update_available"]),
                         fields["connected_to_control"],
                         device.get("lastSeen"), int(fields["key_expiry_disabled"]),
-                        fields["expires"], json.dumps(fields["tags"]),
+                        fields["expires"], json.dumps(fields["tags"]), fields["tailnet_lock_error"],
                         json.dumps(device), now, now,
                     ),
                 )
@@ -1009,13 +1025,14 @@ def upsert_devices(devices: list):
                 conn.execute(
                     "UPDATE devices SET name=?, hostname=?, os=?, client_version=?, "
                     "update_available=?, connected_to_control=?, last_seen=?, "
-                    "key_expiry_disabled=?, expires=?, tags=?, raw_json=?, last_polled_at=? "
+                    "key_expiry_disabled=?, expires=?, tags=?, tailnet_lock_error=?, raw_json=?, last_polled_at=? "
                     "WHERE device_id=?",
                     (
                         fields["name"], fields["hostname"], fields["os"], fields["client_version"],
                         int(fields["update_available"]), fields["connected_to_control"],
                         device.get("lastSeen"), int(fields["key_expiry_disabled"]), fields["expires"],
-                        json.dumps(fields["tags"]), json.dumps(device), now, device_id,
+                        json.dumps(fields["tags"]), fields["tailnet_lock_error"],
+                        json.dumps(device), now, device_id,
                     ),
                 )
                 if changes:
@@ -1034,6 +1051,8 @@ def _existing_device_field(row, field):
         return bool(row[field])
     if field == "connected_to_control":
         return row[field]  # already None/0/1, matches fields["connected_to_control"]
+    if field == "tailnet_lock_error":
+        return row[field] or ""
     return row[field]
 
 

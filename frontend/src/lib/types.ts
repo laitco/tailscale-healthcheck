@@ -37,6 +37,9 @@ export interface Device {
   keyExpiryTimestamp: string | null
   key_healthy: boolean
   key_days_to_expire: number | null
+  tailnetLockError: string
+  lock_healthy: boolean
+  tailnetLockEnabled: boolean
   [key: string]: unknown
 }
 
@@ -45,12 +48,15 @@ export interface HealthMetrics {
   global_online_healthy: boolean
   global_key_healthy: boolean
   global_update_healthy: boolean
+  global_lock_healthy: boolean
   counter_healthy_online_true: number
   counter_healthy_online_false: number
   counter_key_healthy_true: number
   counter_key_healthy_false: number
   counter_update_healthy_true: number
   counter_update_healthy_false: number
+  counter_lock_healthy_true: number
+  counter_lock_healthy_false: number
   [key: string]: unknown
 }
 

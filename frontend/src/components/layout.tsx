@@ -45,7 +45,9 @@ export function Layout({ children }: { children: ReactNode }) {
             device-table.tsx, keys-table.tsx, admin-audit.tsx, ui/table.tsx),
             so this wrapper-level one was redundant anyway - removed instead of
             worked around. */}
-        <main className="flex-1 p-4 sm:p-6">{children}</main>
+        <main className="flex-1 p-4 sm:p-6">
+          <div className="mx-auto w-full max-w-6xl">{children}</div>
+        </main>
       </SidebarInset>
     </SidebarProvider>
   )

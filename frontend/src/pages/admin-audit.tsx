@@ -7,8 +7,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { fetchAuditLog, fetchAuditFilters, type AuditEntry, type AuditFiltersResponse } from '@/lib/admin-api'
+import { relativeTime } from '@/lib/format'
 
 const ALL = '__all__'
+
+const TIME_PRESETS = [
+  { value: '24h', label: 'Last 24 hours', hours: 24 },
+  { value: '7d', label: 'Last 7 days', hours: 24 * 7 },
+  { value: '30d', label: 'Last 30 days', hours: 24 * 30 },
+  { value: 'all', label: 'All time', hours: null },
+  { value: 'custom', label: 'Custom range…', hours: undefined },
+] as const
+type TimePreset = (typeof TIME_PRESETS)[number]['value']
 
 function renderFieldName(field: string): string {
   const spaced = field.replace(/_/g, ' ')
@@ -57,14 +67,31 @@ function ChangesSummary({ entry }: { entry: AuditEntry }) {
     const rows = Object.entries(changes)
     return (
       <div className="space-y-0.5">
-        {rows.map(([field, diff]) => (
-          <div key={field}>
-            <span className="font-medium">{renderFieldName(field)}:</span>{' '}
-            <span className="text-muted-foreground">{stringifyVal(diff.old)}</span>
-            {' → '}
-            <span>{stringifyVal(diff.new)}</span>
-          </div>
-        ))}
+        {rows.map(([field, diff]) => {
+          if (field === 'tailnet_lock_error') {
+            const nowNeedsSigning = Boolean(diff.new)
+            return (
+              <div key={field}>
+                <span className="font-medium">Tailnet lock:</span>{' '}
+                {nowNeedsSigning ? (
+                  <span>
+                    Needs signing <span className="text-muted-foreground">({stringifyVal(diff.new)})</span>
+                  </span>
+                ) : (
+                  <span>Signed</span>
+                )}
+              </div>
+            )
+          }
+          return (
+            <div key={field}>
+              <span className="font-medium">{renderFieldName(field)}:</span>{' '}
+              <span className="text-muted-foreground">{stringifyVal(diff.old)}</span>
+              {' → '}
+              <span>{stringifyVal(diff.new)}</span>
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -132,6 +159,10 @@ export default function AdminAuditPage() {
   const [action, setAction] = useState(ALL)
   const [entityId, setEntityId] = useState(ALL)
   const [actor, setActor] = useState(ALL)
+  // Defaults to "Last 24 hours" so a restart or long-lived deployment doesn't
+  // dump an undifferentiated wall of history where old entries (e.g. the
+  // one-time setup wizard's "created" rows) read as if they just happened.
+  const [timePreset, setTimePreset] = useState<TimePreset>('24h')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
 
@@ -143,18 +174,22 @@ export default function AdminAuditPage() {
 
   function load() {
     setEntries(null)
+    const preset = TIME_PRESETS.find((p) => p.value === timePreset)
+    const presetStart = preset?.hours ? new Date(Date.now() - preset.hours * 3600_000).toISOString() : ''
+    const effectiveStart = timePreset === 'custom' ? (start ? new Date(start).toISOString() : '') : presetStart
+    const effectiveEnd = timePreset === 'custom' ? (end ? new Date(end).toISOString() : '') : ''
     fetchAuditLog({
       entity_type: entityType === ALL ? '' : entityType,
       action: action === ALL ? '' : action,
       entity_id: entityId === ALL ? '' : entityId,
       actor: actor === ALL ? '' : actor,
-      start: start ? new Date(start).toISOString() : '',
-      end: end ? new Date(end).toISOString() : '',
+      start: effectiveStart,
+      end: effectiveEnd,
       limit: '200',
     }).then((data) => setEntries(data.entries))
   }
 
-  useEffect(load, [entityType, action, entityId, actor]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(load, [entityType, action, entityId, actor, timePreset]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const entityIdOptions = useMemo(() => {
     const ids = filters?.entity_ids ?? []
@@ -254,32 +289,51 @@ export default function AdminAuditPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-start">
-                From
-              </label>
-              <Input
-                id="audit-start"
-                type="datetime-local"
-                className="w-48"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-              />
+              <label className="text-xs font-medium text-muted-foreground">Time range</label>
+              <Select value={timePreset} onValueChange={(v) => setTimePreset(v as TimePreset)}>
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TIME_PRESETS.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-end">
-                To
-              </label>
-              <Input
-                id="audit-end"
-                type="datetime-local"
-                className="w-48"
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-              />
-            </div>
-            <Button type="submit" variant="outline">
-              Apply
-            </Button>
+            {timePreset === 'custom' && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-start">
+                    From
+                  </label>
+                  <Input
+                    id="audit-start"
+                    type="datetime-local"
+                    className="w-48"
+                    value={start}
+                    onChange={(e) => setStart(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-end">
+                    To
+                  </label>
+                  <Input
+                    id="audit-end"
+                    type="datetime-local"
+                    className="w-48"
+                    value={end}
+                    onChange={(e) => setEnd(e.target.value)}
+                  />
+                </div>
+                <Button type="submit" variant="outline">
+                  Apply
+                </Button>
+              </>
+            )}
           </form>
         </CardContent>
       </Card>
@@ -287,7 +341,19 @@ export default function AdminAuditPage() {
       {!entries ? (
         <Skeleton className="h-96" />
       ) : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No audit entries match these filters.</p>
+        <p className="text-sm text-muted-foreground">
+          No audit entries match these filters
+          {timePreset !== 'all' && (
+            <>
+              {' '}
+              in this time range — try{' '}
+              <button type="button" className="underline decoration-dotted hover:text-foreground" onClick={() => setTimePreset('all')}>
+                All time
+              </button>
+              .
+            </>
+          )}
+        </p>
       ) : (
         <div className="overflow-x-auto rounded-lg ring-1 ring-foreground/10">
           <Table>
@@ -304,7 +370,10 @@ export default function AdminAuditPage() {
             <TableBody>
               {entries.map((entry) => (
                 <TableRow key={entry.id}>
-                  <TableCell className="whitespace-nowrap">{new Date(entry.occurred_at).toLocaleString()}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {new Date(entry.occurred_at).toLocaleString()}
+                    <span className="ml-1.5 text-[0.65rem] text-muted-foreground">({relativeTime(entry.occurred_at)})</span>
+                  </TableCell>
                   <TableCell>
                     <Badge variant="outline">{entry.entity_type}</Badge>
                   </TableCell>

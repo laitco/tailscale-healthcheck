@@ -15,9 +15,18 @@ import { formatVersion, relativeTime, semverRank } from '@/lib/format'
 import { useNow } from '@/lib/use-now'
 import type { Device } from '@/lib/types'
 
-type SortKey = 'healthy' | 'machineName' | 'os' | 'clientVersion' | 'lastSeen' | 'update_healthy' | 'key_healthy' | 'tags'
+type SortKey =
+  | 'healthy'
+  | 'machineName'
+  | 'os'
+  | 'clientVersion'
+  | 'lastSeen'
+  | 'update_healthy'
+  | 'key_healthy'
+  | 'tailnetLockError'
+  | 'tags'
 
-const columns: { key: SortKey; label: string; className?: string }[] = [
+const BASE_COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: 'healthy', label: 'Status' },
   { key: 'machineName', label: 'Machine' },
   { key: 'os', label: 'OS' },
@@ -27,6 +36,7 @@ const columns: { key: SortKey; label: string; className?: string }[] = [
   { key: 'key_healthy', label: 'Key' },
   { key: 'tags', label: 'Tags' },
 ]
+const LOCK_COLUMN: { key: SortKey; label: string; className?: string } = { key: 'tailnetLockError', label: 'Lock' }
 
 function getSortValue(d: Device, key: SortKey): string | number {
   switch (key) {
@@ -34,6 +44,8 @@ function getSortValue(d: Device, key: SortKey): string | number {
     case 'update_healthy':
     case 'key_healthy':
       return d[key] ? 1 : 0
+    case 'tailnetLockError':
+      return d.tailnetLockError ? 0 : 1
     case 'lastSeen':
       return Date.parse(d.lastSeen || '') || 0
     case 'tags':
@@ -50,6 +62,13 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const navigate = useNavigate()
   useNow(60000) // re-render periodically so "Last Seen" relative times stay current
+
+  // Tailnet Lock is a global admin setting, not a per-device one, but it's
+  // carried on each device dict - showing the column at all when it's off
+  // would surface an irrelevant "Signed" status for every device on tailnets
+  // that don't use Tailnet Lock.
+  const lockEnabled = devices.some((d) => d.tailnetLockEnabled)
+  const columns = lockEnabled ? [...BASE_COLUMNS.slice(0, -1), LOCK_COLUMN, BASE_COLUMNS[BASE_COLUMNS.length - 1]] : BASE_COLUMNS
 
   const sorted = useMemo(() => {
     if (!sortKey) return devices
@@ -137,6 +156,16 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
               <TableCell>
                 <StatusBadge ok={d.key_healthy} trueText={d.keyExpiryDisabled ? 'No Expiry' : 'Valid'} falseText="Expiring" />
               </TableCell>
+              {lockEnabled && (
+                <TableCell>
+                  <StatusBadge
+                    ok={!d.tailnetLockError}
+                    trueText="Signed"
+                    falseText="Locked out"
+                    title={d.tailnetLockError || undefined}
+                  />
+                </TableCell>
+              )}
               <TableCell className={cn('max-w-48 truncate text-muted-foreground')} title={(d.tags || []).join(', ')}>
                 {(d.tags || []).join(', ')}
               </TableCell>

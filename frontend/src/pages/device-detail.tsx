@@ -87,6 +87,22 @@ export default function DeviceDetailPage() {
               </span>
             }
           />
+          {device.tailnetLockEnabled && (
+            <Field
+              label="Tailnet Lock"
+              value={
+                <span className="inline-flex items-center gap-2">
+                  <StatusBadge
+                    ok={!device.tailnetLockError}
+                    trueText="Signed"
+                    falseText="Locked out"
+                    title={device.tailnetLockError || undefined}
+                  />
+                  {device.tailnetLockError && <span className="text-xs text-muted-foreground">({device.tailnetLockError})</span>}
+                </span>
+              }
+            />
+          )}
           <Field
             label="Overall Health"
             value={<StatusBadge ok={device.healthy} trueText="Healthy" falseText="Unhealthy" />}

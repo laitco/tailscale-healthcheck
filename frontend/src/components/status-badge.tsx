@@ -1,10 +1,21 @@
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
-export function StatusBadge({ ok, trueText, falseText }: { ok: boolean; trueText: string; falseText: string }) {
+export function StatusBadge({
+  ok,
+  trueText,
+  falseText,
+  title,
+}: {
+  ok: boolean
+  trueText: string
+  falseText: string
+  title?: string
+}) {
   return (
     <Badge
       variant="outline"
+      title={title}
       className={cn(
         'border-transparent',
         ok

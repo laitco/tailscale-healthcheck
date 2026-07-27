@@ -16,6 +16,7 @@ export default function AdminSetupPage() {
   const [oauthClientId, setOauthClientId] = useState('')
   const [oauthClientSecret, setOauthClientSecret] = useState('')
   const [apiBaseUrl, setApiBaseUrl] = useState('')
+  const [tailnetLockEnabled, setTailnetLockEnabled] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -64,6 +65,7 @@ export default function AdminSetupPage() {
       if (apiBaseUrl.trim()) {
         payload.api_base_url = apiBaseUrl.trim()
       }
+      payload.tailnet_lock_enabled = tailnetLockEnabled ? 'true' : 'false'
     }
     if (needsUser) {
       payload.username = username
@@ -187,6 +189,21 @@ export default function AdminSetupPage() {
                 Used for example API URLs and the API docs page. Leave blank to use the current page's origin.
               </p>
             </div>
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={tailnetLockEnabled}
+                onChange={(e) => setTailnetLockEnabled(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-foreground">I use Tailnet Lock</span>
+                <span className="block text-muted-foreground">
+                  When on, a device needing a Tailnet Lock signature counts as unhealthy. Off by default - safe to
+                  leave unchecked if you don't use Tailnet Lock, and changeable later in Settings.
+                </span>
+              </span>
+            </label>
           </fieldset>
         )}
 

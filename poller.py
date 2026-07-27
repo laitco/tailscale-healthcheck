@@ -145,7 +145,11 @@ def run_poll_cycle():
         devices = devices_response.json().get("devices") or []
         dbstore.upsert_devices(devices)
         devices_count = len(devices)
-        _record("devices_success", f"Fetched {devices_count} device(s).", {"devices_count": devices_count})
+        needs_signing_count = sum(1 for d in devices if d.get("tailnetLockError"))
+        detail = {"devices_count": devices_count}
+        if needs_signing_count:
+            detail["needs_signing_count"] = needs_signing_count
+        _record("devices_success", f"Fetched {devices_count} device(s).", detail)
     except Exception as e:
         cycle_error = str(e)
         cycle_auth_error = _is_auth_error(e)

@@ -700,6 +700,7 @@ HEALTH_SUMMARY_SETTINGS = (
     "update_healthy_is_included_in_health",
     "global_healthy_threshold", "global_key_healthy_threshold",
     "global_online_healthy_threshold", "global_update_healthy_threshold",
+    "tailnet_lock_enabled", "global_lock_healthy_threshold",
     "include_os", "exclude_os", "include_identifier", "exclude_identifier",
     "include_tags", "exclude_tags",
     "include_identifier_update_healthy", "exclude_identifier_update_healthy",
@@ -734,6 +735,8 @@ def _compute_health_summary(devices):
     counter_key_healthy_false = 0
     counter_update_healthy_true = 0
     counter_update_healthy_false = 0
+    counter_lock_healthy_true = 0
+    counter_lock_healthy_false = 0
 
     for device in devices:
         if not should_include_device(device, device_filters):
@@ -752,7 +755,11 @@ def _compute_health_summary(devices):
         online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
         update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
         key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-        is_healthy = online_is_healthy and key_healthy
+        # Requires the explicit tailnet_lock_enabled opt-in (default off), not
+        # just a non-empty tailnetLockError - an admin has to confirm they
+        # actually use Tailnet Lock before it can affect health.
+        lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+        is_healthy = online_is_healthy and key_healthy and lock_healthy
         if cfg["update_healthy_is_included_in_health"]:
             is_healthy = is_healthy and update_is_healthy
 
@@ -772,6 +779,10 @@ def _compute_health_summary(devices):
             counter_update_healthy_true += 1
         else:
             counter_update_healthy_false += 1
+        if lock_healthy:
+            counter_lock_healthy_true += 1
+        else:
+            counter_lock_healthy_false += 1
 
         machine_name = device["name"].split('.')[0]
         health_info = {
@@ -787,6 +798,9 @@ def _compute_health_summary(devices):
             "lastSeen": last_seen_local.isoformat() if last_seen_local else None,
             "online_healthy": online_is_healthy,
             "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+            "tailnetLockError": device.get("tailnetLockError", ""),
+            "lock_healthy": lock_healthy,
+            "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
             "key_healthy": key_healthy,
             "key_days_to_expire": key_days_to_expire,
             "healthy": is_healthy,
@@ -805,10 +819,13 @@ def _compute_health_summary(devices):
         "counter_key_healthy_false": counter_key_healthy_false,
         "counter_update_healthy_true": counter_update_healthy_true,
         "counter_update_healthy_false": counter_update_healthy_false,
+        "counter_lock_healthy_true": counter_lock_healthy_true,
+        "counter_lock_healthy_false": counter_lock_healthy_false,
         "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
         "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
         "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
         "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
+        "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"],
     }
     return health_status, metrics
 
@@ -1170,7 +1187,8 @@ def health_check_by_identifier(identifier):
                 online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
                 update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
                 key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-                is_healthy = online_is_healthy and key_healthy
+                lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+                is_healthy = online_is_healthy and key_healthy and lock_healthy
                 if cfg["update_healthy_is_included_in_health"]:
                     is_healthy = is_healthy and update_is_healthy
 
@@ -1181,6 +1199,8 @@ def health_check_by_identifier(identifier):
                 counter_healthy_online_false = 0 if online_is_healthy else 1
                 counter_key_healthy_true = 1 if key_healthy else 0
                 counter_key_healthy_false = 0 if key_healthy else 1
+                counter_lock_healthy_true = 1 if lock_healthy else 0
+                counter_lock_healthy_false = 0 if lock_healthy else 1
 
                 # Update update healthy counters
                 if not device.get("updateAvailable", False):
@@ -1201,12 +1221,15 @@ def health_check_by_identifier(identifier):
                     "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "tailnetLockError": device.get("tailnetLockError", ""),
+                    "lock_healthy": lock_healthy,
+                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy,
+                    "healthy": online_is_healthy and key_healthy and lock_healthy,
                     "tags": remove_tag_prefix(device.get("tags", []))
                 }
-                
+
                 if not device.get("keyExpiryDisabled", False):
                     health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
 
@@ -1221,10 +1244,13 @@ def health_check_by_identifier(identifier):
                         "counter_key_healthy_false": counter_key_healthy_false,
                         "counter_update_healthy_true": counter_update_healthy_true,
                         "counter_update_healthy_false": counter_update_healthy_false,
+                        "counter_lock_healthy_true": counter_lock_healthy_true,
+                        "counter_lock_healthy_false": counter_lock_healthy_false,
                         "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
                         "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
                         "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
-                        "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
+                        "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
+                        "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
                     },
                     # If polling has been failing (credentials revoked, API
                     # unreachable), this device's fields are the last known
@@ -1282,6 +1308,8 @@ def health_check_unhealthy():
         counter_key_healthy_false = 0
         counter_update_healthy_true = 0
         counter_update_healthy_false = 0
+        counter_lock_healthy_true = 0
+        counter_lock_healthy_false = 0
 
         # Check health status for each device and filter unhealthy devices
         unhealthy_devices = []
@@ -1307,7 +1335,8 @@ def health_check_unhealthy():
             online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
             update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-            is_healthy = online_is_healthy and key_healthy
+            lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+            is_healthy = online_is_healthy and key_healthy and lock_healthy
             if cfg["update_healthy_is_included_in_health"]:
                 is_healthy = is_healthy and update_is_healthy
 
@@ -1322,6 +1351,10 @@ def health_check_unhealthy():
                     counter_key_healthy_false += 1
                 else:
                     counter_key_healthy_true += 1
+                if not lock_healthy:
+                    counter_lock_healthy_false += 1
+                else:
+                    counter_lock_healthy_true += 1
 
                 # Update update healthy counters
                 if not device.get("updateAvailable", False):
@@ -1343,15 +1376,18 @@ def health_check_unhealthy():
                     "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "tailnetLockError": device.get("tailnetLockError", ""),
+                    "lock_healthy": lock_healthy,
+                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy,
+                    "healthy": online_is_healthy and key_healthy and lock_healthy,
                     "tags": remove_tag_prefix(device.get("tags", []))
                 }
-                
+
                 if not device.get("keyExpiryDisabled", False):
                     health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-                
+
                 unhealthy_devices.append(health_info)
 
         response = {
@@ -1365,10 +1401,13 @@ def health_check_unhealthy():
                 "counter_key_healthy_false": counter_key_healthy_false,
                 "counter_update_healthy_true": counter_update_healthy_true,
                 "counter_update_healthy_false": counter_update_healthy_false,
+                "counter_lock_healthy_true": counter_lock_healthy_true,
+                "counter_lock_healthy_false": counter_lock_healthy_false,
                 "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
                 "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
                 "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
-                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
+                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
+                "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
             },
             "poll_meta": _build_poll_meta(),
         }
@@ -1417,6 +1456,8 @@ def health_check_healthy():
         counter_key_healthy_false = 0
         counter_update_healthy_true = 0
         counter_update_healthy_false = 0
+        counter_lock_healthy_true = 0
+        counter_lock_healthy_false = 0
 
         # Check health status for each device and filter healthy devices
         healthy_devices = []
@@ -1442,7 +1483,8 @@ def health_check_healthy():
             online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
             update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
             key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-            is_healthy = online_is_healthy and key_healthy
+            lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
+            is_healthy = online_is_healthy and key_healthy and lock_healthy
             if cfg["update_healthy_is_included_in_health"]:
                 is_healthy = is_healthy and update_is_healthy
 
@@ -1451,6 +1493,7 @@ def health_check_healthy():
                 counter_healthy_true += 1
                 counter_healthy_online_true += 1
                 counter_key_healthy_true += 1
+                counter_lock_healthy_true += 1
 
                 # Update update healthy counters
                 if not device.get("updateAvailable", False):
@@ -1472,15 +1515,18 @@ def health_check_healthy():
                     "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
                     "online_healthy": online_is_healthy,
                     "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
+                    "tailnetLockError": device.get("tailnetLockError", ""),
+                    "lock_healthy": lock_healthy,
+                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
                     "key_healthy": key_healthy,
                     "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy,
+                    "healthy": online_is_healthy and key_healthy and lock_healthy,
                     "tags": remove_tag_prefix(device.get("tags", []))
                 }
-                
+
                 if not device.get("keyExpiryDisabled", False):
                     health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-                
+
                 healthy_devices.append(health_info)
 
         response = {
@@ -1494,10 +1540,13 @@ def health_check_healthy():
                 "counter_key_healthy_false": counter_key_healthy_false,
                 "counter_update_healthy_true": counter_update_healthy_true,
                 "counter_update_healthy_false": counter_update_healthy_false,
+                "counter_lock_healthy_true": counter_lock_healthy_true,
+                "counter_lock_healthy_false": counter_lock_healthy_false,
                 "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
                 "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
                 "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
-                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"]
+                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
+                "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
             },
             "poll_meta": _build_poll_meta(),
         }

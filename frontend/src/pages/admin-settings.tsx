@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Eye, EyeOff, RefreshCw } from 'lucide-react'
+import { Eye, EyeOff, Info, Lock, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -46,6 +46,11 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
     { name: 'oauth_client_secret', label: 'OAuth client secret' },
     { name: 'health_endpoint_token', label: 'Health endpoint token (X-Health-Token)', generatable: true },
     { name: 'api_base_url', label: 'Public base URL' },
+    {
+      name: 'tailnet_lock_enabled',
+      label: 'I use Tailnet Lock',
+      help: 'When on, a device needing a Tailnet Lock signature counts as unhealthy, and the Lock status is shown on the devices table and device detail page. Off by default.',
+    },
   ],
   thresholds: [
     { name: 'online_threshold_minutes', label: 'Online threshold', unit: 'minutes' },
@@ -76,6 +81,12 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
       help: 'Max number of devices with an update available tolerated before global_update_healthy flips to false.',
     },
     { name: 'update_healthy_is_included_in_health', label: 'Include update health in overall health' },
+    {
+      name: 'global_lock_healthy_threshold',
+      label: 'Global lock-healthy threshold',
+      unit: 'devices (count, not %)',
+      help: 'Max number of devices needing a Tailnet Lock signature tolerated before global_lock_healthy flips to false. Only relevant when "I use Tailnet Lock" is on (Connection settings).',
+    },
   ],
   filters: [
     { name: 'include_os', label: 'Include OS' },
@@ -125,13 +136,35 @@ const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 
 type DraftValue = string | number | boolean
 
-function SettingLabel({ label, htmlFor, meta }: { label: string; htmlFor: string; meta: SettingField }) {
+function SettingLabel({
+  label,
+  htmlFor,
+  meta,
+  help,
+}: {
+  label: string
+  htmlFor: string
+  meta: SettingField
+  help?: string
+}) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {meta.source === 'env' && (
+        <Lock
+          className="size-3 shrink-0 text-muted-foreground"
+          aria-label={`Configured via environment variable ${meta.env_var}`}
+        >
+          <title>{`Configured via environment variable ${meta.env_var}`}</title>
+        </Lock>
+      )}
+      {help && (
+        <Info className="size-3 shrink-0 text-muted-foreground" aria-label={help}>
+          <title>{help}</title>
+        </Info>
+      )}
       <label className="text-xs font-medium text-muted-foreground" htmlFor={htmlFor}>
         {label}
       </label>
-      {meta.source === 'env' && <Badge variant="secondary">env: {meta.env_var}</Badge>}
       {meta.restart_required && (
         <Badge variant="outline" className="text-muted-foreground">
           Applies after restart
@@ -349,10 +382,9 @@ export default function AdminSettingsPage() {
 
     return (
       <div className="space-y-1" key={def.name}>
-        <SettingLabel label={def.label} htmlFor={id} meta={meta} />
+        <SettingLabel label={def.label} htmlFor={id} meta={meta} help={def.help} />
         {control}
         {def.unit && <p className="text-[0.7rem] text-muted-foreground">Unit: {def.unit}</p>}
-        {def.help && <p className="text-[0.7rem] text-muted-foreground">{def.help}</p>}
       </div>
     )
   }
@@ -406,7 +438,7 @@ export default function AdminSettingsPage() {
                 <CardTitle>{GROUP_LABELS[group]}</CardTitle>
                 {GROUP_DESCRIPTIONS[group] && <CardDescription>{GROUP_DESCRIPTIONS[group]}</CardDescription>}
               </CardHeader>
-              <CardContent className="grid gap-3 sm:grid-cols-2">
+              <CardContent className="grid gap-3">
                 {FIELDS_BY_GROUP[group].map((def) => renderField(def))}
               </CardContent>
             </Card>
