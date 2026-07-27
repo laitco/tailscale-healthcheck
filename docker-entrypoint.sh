@@ -56,19 +56,39 @@ fail_unwritable() {
     _uid="$1"
     _owner=$(stat -c '%u:%g' "$DB_DIR" 2>/dev/null || echo 'unknown')
     _mode=$(stat -c '%a' "$DB_DIR" 2>/dev/null || echo 'unknown')
-    echo "FATAL: $DB_DIR is not writable by uid $_uid, and no usable uid could be found." >&2
+    echo "FATAL: $DB_DIR is not writable by uid $_uid." >&2
     echo "       It is owned by $_owner with mode $_mode." >&2
-    echo "       This usually means the volume is mounted read-only." >&2
     echo "" >&2
-    echo "  Fix one of these, then restart the container:" >&2
-    echo "    * Remove any :ro flag from the volume mount." >&2
-    echo "    * Bind mount on a normal Linux filesystem:" >&2
-    echo "        chown -R $DEFAULT_UID:$DEFAULT_GID <host path>" >&2
-    echo "    * Bind mount on CIFS/SMB or NFS:" >&2
-    echo "        set PUID/PGID to the uid/gid the share is mounted as," >&2
-    echo "        e.g. -e PUID=1000 -e PGID=1000" >&2
-    echo "    * Simplest: use a Docker named volume instead of a bind mount," >&2
-    echo "        e.g. -v tailscale-healthcheck-data:/data" >&2
+
+    if [ "$(id -u)" != "0" ]; then
+        # Started non-root (docker run --user, compose `user:`, Portainer's
+        # User field, Kubernetes runAsUser). We can neither chown nor switch
+        # user from here, so PUID/PGID and named volumes are NOT the fix and
+        # suggesting them just sends people in circles - this is host-side.
+        echo "  This container was started as a non-root user, so it cannot take" >&2
+        echo "  ownership of the directory itself. Fix one of these on the host:" >&2
+        echo "" >&2
+        echo "    * Make the directory match the uid you are running as:" >&2
+        echo "        chown -R $_uid:$(id -g) <host path>" >&2
+        echo "    * Or drop the user override (remove \`user:\` from compose /" >&2
+        echo "      clear the User field / omit --user) and let the container" >&2
+        echo "      fix ownership itself on startup." >&2
+        echo "    * Note: PUID/PGID have no effect here - they only apply when" >&2
+        echo "      the container starts as root." >&2
+    else
+        echo "  The directory could not be chowned and no usable uid was found;" >&2
+        echo "  this usually means the volume is mounted read-only." >&2
+        echo "" >&2
+        echo "  Fix one of these, then restart the container:" >&2
+        echo "    * Remove any :ro flag from the volume mount." >&2
+        echo "    * Bind mount on a normal Linux filesystem:" >&2
+        echo "        chown -R $DEFAULT_UID:$DEFAULT_GID <host path>" >&2
+        echo "    * Bind mount on CIFS/SMB or NFS:" >&2
+        echo "        set PUID/PGID to the uid/gid the share is mounted as," >&2
+        echo "        e.g. -e PUID=1000 -e PGID=1000" >&2
+        echo "    * Simplest: use a Docker named volume instead of a bind mount," >&2
+        echo "        e.g. -v tailscale-healthcheck-data:/data" >&2
+    fi
     exit 1
 }
 
