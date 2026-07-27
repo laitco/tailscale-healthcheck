@@ -4,10 +4,11 @@ import types
 import pytest
 
 
-def _load_healthcheck() -> types.ModuleType:
+def _load_healthcheck(database_path) -> types.ModuleType:
     here = os.path.dirname(__file__)
     root = os.path.abspath(os.path.join(here, os.pardir))
     module_path = os.path.join(root, "healthcheck.py")
+    os.environ["DATABASE_PATH"] = str(database_path)
     spec = importlib.util.spec_from_file_location("healthcheck", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -16,13 +17,15 @@ def _load_healthcheck() -> types.ModuleType:
 
 
 @pytest.fixture
-def client(monkeypatch):
-    module = _load_healthcheck()
+def client(monkeypatch, tmp_path):
+    module = _load_healthcheck(tmp_path / "healthcheck.db")
     # Avoid external calls during GETs by mocking device fetch
     monkeypatch.setattr(module, "fetch_devices", lambda: [])
+    module.dbstore.create_user("tester", "correct-horse-battery-staple")
     app = module.app
     app.testing = True
     with app.test_client() as c:
+        c.post("/admin/api/login", json={"username": "tester", "password": "correct-horse-battery-staple"})
         yield c
 
 
@@ -53,7 +56,14 @@ def test_cache_invalidate_get_ok_and_post_forbidden(client):
     r_get = client.get("/health/cache/invalidate")
     assert r_get.status_code == 200
     data = r_get.get_json()
-    assert "message" in data
+    assert "triggered" in data
 
     r_post = client.post("/health/cache/invalidate")
     assert r_post.status_code == 403
+
+
+def test_admin_routes_exempt_from_read_only_enforcement(client):
+    # /admin/* legitimately needs POST (setup wizard, login, etc.) and must
+    # not be rejected by the blanket read-only-method guard.
+    resp = client.post("/admin/api/login", json={"username": "x", "password": "y"})
+    assert resp.status_code != 403

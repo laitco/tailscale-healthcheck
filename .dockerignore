@@ -3,3 +3,8 @@ __pycache__/
 *.pyo
 *.log
 .env
+.venv/
+.git/
+frontend/node_modules/
+frontend/dist/
+static/app/

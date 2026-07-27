@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from dateutil import parser as date_parser
 import pytz
 
-def _load_healthcheck_with_env(env: dict) -> types.ModuleType:
+def _load_healthcheck_with_env(env: dict, database_path=None) -> types.ModuleType:
     here = os.path.dirname(__file__)
     root = os.path.abspath(os.path.join(here, os.pardir))
     module_path = os.path.join(root, "healthcheck.py")
@@ -16,6 +16,8 @@ def _load_healthcheck_with_env(env: dict) -> types.ModuleType:
     old_env = os.environ.copy()
     try:
         os.environ.update({k: str(v) for k, v in env.items()})
+        if database_path is not None:
+            os.environ["DATABASE_PATH"] = str(database_path)
         spec.loader.exec_module(module)
     finally:
         os.environ.clear()
@@ -37,13 +39,13 @@ def _connected_device():
     }
 
 
-def test_health_endpoint_handles_connected_without_last_seen(monkeypatch):
+def test_health_endpoint_handles_connected_without_last_seen(monkeypatch, tmp_path):
     module = _load_healthcheck_with_env({
         "CACHE_ENABLED": "NO",
         "RATE_LIMIT_ENABLED": "NO",
         "ONLINE_THRESHOLD_MINUTES": "5",
         "KEY_THRESHOLD_MINUTES": "1440",
-    })
+    }, database_path=tmp_path / "healthcheck.db")
     monkeypatch.setattr(module, "fetch_devices", lambda: [_connected_device()])
     client = module.app.test_client()
 
@@ -63,14 +65,19 @@ def test_health_endpoint_handles_connected_without_last_seen(monkeypatch):
     assert body["metrics"]["counter_healthy_true"] == 1
 
 
-def test_device_lookup_returns_connected_flag(monkeypatch):
+def test_device_lookup_returns_connected_flag(monkeypatch, tmp_path):
     module = _load_healthcheck_with_env({
         "CACHE_ENABLED": "NO",
         "RATE_LIMIT_ENABLED": "NO",
-    })
+    }, database_path=tmp_path / "healthcheck.db")
     device_payload = _connected_device()
     monkeypatch.setattr(module, "fetch_devices", lambda: [device_payload])
+    module.dbstore.create_user("tester", "correct-horse-battery-staple")
     client = module.app.test_client()
+    client.post(
+        "/admin/api/login",
+        json={"username": "tester", "password": "correct-horse-battery-staple"},
+    )
 
     before = datetime.now(pytz.UTC)
     resp = client.get("/health/connected")

@@ -39,25 +39,48 @@ jobs:
           pip install flake8 pytest
 
       - name: Lint
-        run: flake8 healthcheck.py
+        run: flake8 healthcheck.py dbstore.py auth.py poller.py admin.py notifier.py gunicorn_config.py
 
       - name: Test
         env:
           # Use in-memory rate limit storage during tests to avoid
           # file-backed persistence affecting test isolation.
           RATE_LIMIT_STORAGE_URL: memory://
-        run: |
-          set -e
-          pytest -q || code=$?
-          if [ -n "$code" ]; then
-            # Exit code 5 means no tests collected; treat as success
-            if [ "$code" -eq 5 ]; then
-              echo "No tests collected; skipping failures."
-              exit 0
-            else
-              exit "$code"
-            fi
-          fi
+        # Exit code 5 (no tests collected) used to be swallowed as success,
+        # which meant a collection error - a bad import in conftest, a renamed
+        # tests/ directory - passed CI silently while running nothing.
+        run: pytest -q
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # The action reads the pnpm version from the "packageManager" field,
+          # but defaults to a package.json at the repository root - and this
+          # repo only has one under frontend/, so it must be pointed at it
+          # explicitly or it fails with "No pnpm version is specified".
+          package_json_file: frontend/package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      # Both of these previously only ran (indirectly, and only tsc) inside the
+      # Docker build below, so a type error surfaced as an opaque Docker
+      # failure and oxlint never ran in CI at all.
+      - name: Lint frontend
+        working-directory: frontend
+        run: pnpm lint
+
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: pnpm exec tsc -b --noEmit
 
       - name: Docker build (verification only)
         run: docker build -t tailscale-healthcheck:ci .

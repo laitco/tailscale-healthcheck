@@ -1,0 +1,45 @@
+services:
+  tailscale-healthcheck:
+    image: laitco/tailscale-healthcheck:latest
+    # To build from a local checkout instead of pulling the published image,
+    # comment out `image:` above and uncomment this:
+    # build: .
+    container_name: tailscale-healthcheck
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      # Holds the SQLite database: settings, admin users, the device/key
+      # snapshot, and the audit log. Without this volume every restart drops
+      # you back into the first-run setup wizard.
+      - tailscale-healthcheck-data:/data
+    environment:
+      # Everything here is optional - the first-run wizard at /admin/setup can
+      # configure the tailnet and credentials instead, and stores them in the
+      # database. Any variable set here takes precedence and shows as
+      # read-only in /admin/settings.
+      #
+      # TAILNET_DOMAIN: example.com
+      # Use OAuth (recommended) or a static API token, not both:
+      # OAUTH_CLIENT_ID: your-client-id
+      # OAUTH_CLIENT_SECRET: your-client-secret
+      # AUTH_TOKEN: tskey-api-...
+      TZ: UTC
+      TIMEZONE: UTC
+      # Set to the number of reverse proxies in front of this service (1 for a
+      # typical nginx/Traefik/Caddy setup). Leaving it at 0 behind a proxy
+      # makes every client look like the proxy to the rate limiter and the
+      # failed-login lockout. See the Security section of the README.
+      TRUSTED_PROXY_COUNT: 0
+      # Set to YES once you terminate TLS in front of this service.
+      SESSION_COOKIE_SECURE: NO
+    # Or load the whole configuration from a file instead (see .env.example):
+    # env_file:
+    #   - .env
+    #
+    # No `healthcheck:` block here on purpose - the image already declares one
+    # (see HEALTHCHECK in the Dockerfile), and duplicating it here would just
+    # give it a second definition to drift out of sync with.
+
+volumes:
+  tailscale-healthcheck-data:

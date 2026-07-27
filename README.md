@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/laitco/tailscale-healthcheck?style=social" alt="GitHub Stars">
-  <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/publish-image.yaml?branch=main" alt="GitHub Workflow Status">
+  <img src="https://img.shields.io/github/actions/workflow/status/laitco/tailscale-healthcheck/release.yaml?branch=main" alt="GitHub Workflow Status">
   <img src="https://img.shields.io/docker/pulls/laitco/tailscale-healthcheck" alt="Docker Pulls">
   <img src="https://img.shields.io/github/license/laitco/tailscale-healthcheck" alt="License">
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
@@ -25,13 +25,24 @@
   - [`/health/<identifier>`](#healthidentifier)
   - [`/health/healthy`](#healthhealthy)
   - [`/health/unhealthy`](#healthunhealthy)
+  - [`/health/cache/invalidate`](#healthcacheinvalidate)
+  - [`/admin`](#admin)
 - [⚙️ Configuration](#️-configuration)
+  - [Process bootstrap (env-only)](#process-bootstrap-env-only)
+  - [Security](#security)
+  - [Logging](#logging)
+  - [Rate Limiting](#rate-limiting)
+  - [Notifications](#notifications)
+  - [Background Polling](#background-polling)
+  - [Read-Only Proxy](#read-only-proxy)
+- [🔐 Admin UI](#-admin-ui)
+  - [Response Metrics](#response-metrics)
   - [Using OAuth for Authentication](#using-oauth-for-authentication-recommended)
   - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
-  - [Logging](#logging)
-  - [Rate Limiting](#rate-limiting)
+  - [Filter Configuration Examples](#filter-configuration-examples)
 - [🐳 Running with Docker](#-running-with-docker)
+  - [Run with Docker Compose](#run-with-docker-compose)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
 - [📡 Integration with Gatus Monitoring System](#-integration-with-gatus-monitoring-system)
@@ -40,13 +51,14 @@
   - [Testing](#testing)
 - [📜 License](#-license)
 - [🤝 Contributing](#-contributing)
-- [⭐ Star History](#-star-history)
 
 ## ✨ Description
 
 A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
 
 > Release notes have moved to the [GitHub Releases page](https://github.com/laitco/tailscale-healthcheck/releases).
+
+> This project's code is largely AI-written (Claude Code), with a human in the loop driving requirements, design decisions, review, and testing.
 
 ## 🌟 Features
 
@@ -76,16 +88,20 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
 - **Healthy Devices**: List all healthy devices.
 - **Unhealthy Devices**: List all unhealthy devices.
 - **Timezone Support**: Adjust `lastSeen` timestamps to a configurable timezone.
-- **Display Settings**:
-  - Optional settings display in API output
-  - Configurable via DISPLAY_SETTINGS_IN_OUTPUT
-  - Secure masking of sensitive data
-  - Comprehensive configuration overview
-- **Configurable Caching**:
-  - Optional in-memory cache for Tailscale API responses
-  - Tunable TTL to balance freshness vs. API usage
-  - Manual cache invalidation endpoint
-  - Optional shared cache backends: File (local) or Redis
+- **Background Polling + SQLite Persistence**:
+  - Device and tailnet key data is refreshed from the Tailscale API by a background poller (`POLL_INTERVAL_SECONDS`, default 60s) and persisted to SQLite - `/health`, `/keys`, and the dashboard all read from that snapshot instead of calling the Tailscale API per request
+  - Manual poll-now endpoint (`/health/cache/invalidate`, kept at this URL for backward compatibility)
+  - Rolling 24h aggregate metrics history for the dashboard's trend tiles, purged after 48h
+- **Web-based Admin UI** (`/admin`):
+  - First-run setup wizard when no tailnet/auth is configured (env or database) and/or no admin user exists yet
+  - Full settings editor covering every configurable behavior (connection, thresholds, filters, rate limiting, retry/backoff, polling, logging) grouped by category - env vars always take precedence; DB-backed values persist across container restarts and survive env var removal
+  - User management (Flask-Login session auth)
+  - Audit log of device/key/setting/user changes, rendered as a readable diff (field: old → new) with a raw-JSON toggle, filterable by entity type, entity id, action, actor, changed field, free-text search over the change contents, and date range (all combinable, and reflected in the URL so a filtered view is shareable), auto-purged after `AUDIT_RETENTION_DAYS` (default 14)
+  - Interactive API docs page (`/admin/api-docs`) with "Try it" against the live API
+  - Debug page (`/debug`) showing the background poller's recent activity log (persisted, not in-memory), filterable by event type
+  - A visible banner on the dashboard and settings page when the poller can't reach the Tailscale API, calling out auth-credential problems specifically
+  - User profile page (`/admin/profile`): change password, and enroll/disable TOTP-based two-factor authentication (with one-time recovery codes shown on enrollment); MFA-enabled accounts get a second login step
+- **Tailnet Key Filters**: `INCLUDE_KEY_TYPE`/`EXCLUDE_KEY_TYPE`/`INCLUDE_KEY_DESCRIPTION`/`EXCLUDE_KEY_DESCRIPTION` narrow which tailnet API/auth keys are reported, mirroring the device filters below.
 
 ## 📡 Endpoints
 
@@ -111,6 +127,10 @@ Returns the health status of all devices.
       "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
       "key_healthy": true,
       "key_days_to_expire": 25,
+      "tailnetLockError": "",
+      "lock_healthy": true,
+      "tailnetLockEnabled": false,
+      "isLockSigner": false,
       "healthy": true,
       "tags": ["user-device", "admin-device"]
     }
@@ -124,78 +144,19 @@ Returns the health status of all devices.
     "counter_key_healthy_false": 0,
     "counter_update_healthy_true": 1,
     "counter_update_healthy_false": 0,
+    "counter_lock_healthy_true": 1,
+    "counter_lock_healthy_false": 0,
     "global_key_healthy": true,
     "global_online_healthy": true,
     "global_healthy": true,
-    "global_update_healthy": true
+    "global_update_healthy": true,
+    "global_lock_healthy": true
   }
 }
 ```
+`tailnetLockError` reflects the Tailscale API's own device data regardless of app configuration: empty unless the tailnet actually has [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock) enabled and that device's node-key signature is missing/invalid. `lock_healthy` (and therefore `healthy`), on the other hand, only reacts to a non-empty `tailnetLockError` once `TAILNET_LOCK_ENABLED=YES` is set - by default it's always `true`. There's no way to determine *which* devices are the tailnet's trusted signing nodes via the public API (that's only exposed by the `tailscale lock status` CLI, not this HTTP API) - this app can only report whether a given device still needs to be signed.
 
-**Example with settings output (`DISPLAY_SETTINGS_IN_OUTPUT=YES`):**
-```json
-{
-  "devices": [
-    {
-      "id": "1234567890",
-      "device": "examplehostname.example.com",
-      "machineName": "examplehostname",
-      "hostname": "examplehostname",
-      "os": "macOS",
-      "clientVersion": "v1.36.0",
-      "updateAvailable": false,
-      "update_healthy": true,
-      "lastSeen": "2025-04-09T22:03:57+02:00",
-      "online_healthy": true,
-      "keyExpiryDisabled": false,
-      "keyExpiryTimestamp": "2025-05-09T22:03:57+02:00",
-      "key_healthy": true,
-      "key_days_to_expire": 25,
-      "healthy": true,
-      "tags": ["user-device", "admin-device"]
-    }
-  ],
-  "metrics": {
-    "counter_healthy_true": 1,
-    "counter_healthy_false": 0,
-    "counter_healthy_online_true": 1,
-    "counter_healthy_online_false": 0,
-    "counter_key_healthy_true": 1,
-    "counter_key_healthy_false": 0,
-    "counter_update_healthy_true": 1,
-    "counter_update_healthy_false": 0,
-    "global_healthy": true,
-    "global_key_healthy": true,
-    "global_online_healthy": true,
-    "global_update_healthy": true
-  },
-  "settings": {
-    "TAILNET_DOMAIN": "example.com",
-    "OAUTH_CLIENT_ID": "123456789abcdefg",
-    "OAUTH_CLIENT_SECRET": "********",
-    "AUTH_TOKEN": "********",
-    "ONLINE_THRESHOLD_MINUTES": 5,
-    "KEY_THRESHOLD_MINUTES": 1440,
-    "GLOBAL_HEALTHY_THRESHOLD": 100,
-    "GLOBAL_ONLINE_HEALTHY_THRESHOLD": 100,
-    "GLOBAL_KEY_HEALTHY_THRESHOLD": 100,
-    "GLOBAL_UPDATE_HEALTHY_THRESHOLD": 100,
-    "UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH": true,
-    "DISPLAY_SETTINGS_IN_OUTPUT": true,
-    "TIMEZONE": "Europe/Berlin",
-    "INCLUDE_OS": "",
-    "EXCLUDE_OS": "",
-    "INCLUDE_IDENTIFIER": "",
-    "EXCLUDE_IDENTIFIER": "",
-    "INCLUDE_TAGS": "",
-    "EXCLUDE_TAGS": "",
-    "INCLUDE_IDENTIFIER_UPDATE_HEALTHY": "",
-    "EXCLUDE_IDENTIFIER_UPDATE_HEALTHY": "",
-    "INCLUDE_TAG_UPDATE_HEALTHY": "",
-    "EXCLUDE_TAG_UPDATE_HEALTHY": ""
-  }
-}
-```
+Full settings (including secrets, masked) are no longer embeddable in this response - view/edit them at `/admin/settings` (login required) or browse `GET /admin/api/settings` instead.
 
 ### `/keys`
 Returns the health status of tailnet API and auth keys (from the Tailscale [`GET /tailnet/{tailnet}/keys?all=true`](https://tailscale.com/api#tag/keys/GET/tailnet/{tailnet}/keys) endpoint, listing all keys in the tailnet, not just the caller's own). Only `api` and `auth` key types are reported (`client`/OAuth-client keys are excluded). A key is `key_healthy: false` once its expiry is at or below `KEY_EXPIRY_WARNING_DAYS` days out; keys without an `expires` field never expire and are always healthy.
@@ -242,16 +203,27 @@ If `TAILNET_DOMAIN` is left at its default (`example.com`), or the tailnet simpl
 This passthrough applies to `/health`, `/keys`, and their variants (`/health/<identifier>`, `/health/healthy`, `/health/unhealthy`), as well as the dashboard and device detail pages (rendered as an error page with the same status code).
 
 ### `/health/<identifier>`
-Returns the health status of a specific device by hostname, ID, or name.
+Returns the health status of a specific device by hostname, ID, name, or machine name (the part of the name before the first dot). Matching is case-insensitive. A device excluded by the device filters (`INCLUDE_OS`/`EXCLUDE_TAGS`/…) is not addressable here and returns `404`, the same as an unknown identifier. Its `metrics` block is scoped to the single returned device.
 
 ### `/health/healthy`
-Returns a list of all healthy devices.
+Returns the devices currently reported as healthy, plus the same tailnet-wide `metrics` block `/health` returns.
 
 ### `/health/unhealthy`
-Returns a list of all unhealthy devices.
+Returns the devices currently reported as unhealthy, plus the same tailnet-wide `metrics` block `/health` returns.
+
+> **Note (behaviour change):** `/health/healthy`, `/health/unhealthy` and `/health/<identifier>` are
+> now views over exactly the same computation as `/health`. Two things changed as a result:
+> the device include/exclude filters now apply to all of them (previously only `/health` honoured
+> them, so an excluded device could still fail a check against `/health/unhealthy`), and their
+> `metrics` counters now describe the whole tailnet rather than just the returned subset. The
+> latter is what makes `global_healthy` meaningful on `/health/healthy` - it was structurally
+> always `true` before, because the false-counters could never be incremented there.
 
 ### `/health/cache/invalidate`
-Clears the in-memory cache. Safe to call anytime. Useful when caching is enabled and you want to force a refresh before TTL expiry.
+Triggers an immediate out-of-band poll of the Tailscale API instead of waiting for the next `POLL_INTERVAL_SECONDS` tick. Kept at this URL/method for backward compatibility with existing monitoring configs.
+
+### `/admin`
+Web UI for first-run setup, login, settings, user management, and the audit log. See [Admin UI](#-admin-ui) below.
 
 ## ⚙️ Configuration
 
@@ -259,11 +231,22 @@ The application is configured using environment variables:
 
 | Variable             | Default Value      | Description                                                                 |
 |----------------------|--------------------|-----------------------------------------------------------------------------|
-| `TAILNET_DOMAIN`     | `example.com`     | The Tailscale tailnet domain.                                              |
-| `AUTH_TOKEN`         | None              | The Tailscale API token (required if OAuth is not configured).             |
-| `OAUTH_CLIENT_ID`    | None              | The OAuth client ID (required if using OAuth).                             |
-| `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth).                         |
-| `LOG_LEVEL`          | `INFO`            | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.    |
+| `TAILNET_DOMAIN`     | `example.com`     | The Tailscale tailnet domain. If unset (or left at the default), the setup wizard at `/admin/setup` prompts for it and saves it to the database. |
+| `AUTH_TOKEN`         | None              | The Tailscale API token (required if OAuth is not configured and not set via the setup wizard/settings UI). |
+| `OAUTH_CLIENT_ID`    | None              | The OAuth client ID (required if using OAuth and not set via the setup wizard/settings UI). |
+| `OAUTH_CLIENT_SECRET`| None              | The OAuth client secret (required if using OAuth and not set via the setup wizard/settings UI). |
+| `DATABASE_PATH`      | `/data/healthcheck.db` (Docker) | Path to the SQLite database (settings, users, device/key snapshots, audit log). Mount a volume at `/data` to persist it. |
+| `SECRET_KEY`         | auto-generated    | Signs admin session cookies. If unset, a random key is generated on first boot and persisted to the database so all Gunicorn workers share it. |
+| `API_BASE_URL`       | `""`              | Public base URL for this instance (e.g. behind a reverse proxy). Used for example commands and "Try it" calls on the API docs page (`/admin/api-docs`). Blank uses the current page's origin. |
+| `POLL_INTERVAL_SECONDS` | `60`           | How often the background poller refreshes devices/tailnet keys from the Tailscale API into SQLite. |
+| `AUDIT_RETENTION_DAYS` | `14`            | How long audit log entries are kept before being purged. Also editable via `/admin/settings`. |
+| `POLLER_LOG_RETENTION_DAYS` | `7`         | How long the poller's operational activity log (shown on `/debug`) is kept before being purged. Also editable via `/admin/settings`. |
+| `HEALTH_ENDPOINT_TOKEN` | `""` (disabled) | Optional shared secret guarding the public `/health` endpoint. When set, requests must include a matching `X-Health-Token` header or get `401`. Also editable via `/admin/settings`. |
+| `TRUSTED_PROXY_COUNT` | `0`              | Number of reverse proxies in front of the app. `0` trusts nothing and uses the direct peer address; set it to your real proxy count (usually `1`) so per-IP rate limits and the failed-login lockout key off the actual client. Needs a restart. See [Security](#security). |
+| `SESSION_COOKIE_SECURE` | `NO`           | Add the `Secure` flag to the admin session cookie. Set `YES` when serving over HTTPS. Needs a restart. |
+| `SESSION_LIFETIME_MINUTES` | `43200`     | Admin session lifetime in minutes (default 30 days). Needs a restart.       |
+| `LOG_LEVEL`          | `INFO`            | Root log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Changes via `/admin/settings` persist but need a process restart to take effect. |
+| `DEBUG_LOG_ENABLED`  | `YES`             | Whether the background poller records into its in-memory activity log, shown on the `/debug` page. Applies immediately (no restart needed). |
 | `HTTP_TIMEOUT`       | `10`              | Timeout in seconds applied to all outbound HTTP requests.                  |
 | `MAX_RETRIES`        | `3`               | Maximum total attempts for outbound authenticated requests (bounded).      |
 | `BACKOFF_BASE_SECONDS` | `0.5`           | Initial backoff delay in seconds between retry attempts.                   |
@@ -277,8 +260,16 @@ The application is configured using environment variables:
 | `GLOBAL_KEY_HEALTHY_THRESHOLD`   | `100`        | The threshold for total key health.                             |
 | `GLOBAL_UPDATE_HEALTHY_THRESHOLD`| `100`        | The threshold for total update health.                             |
 | `UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH`| `NO` | Whether update health is included in overall health status. Example: `YES`                             |
-| `DISPLAY_SETTINGS_IN_OUTPUT`| `NO` | Whether to include configuration settings in API output. Example: `YES`                             |
-| `PORT`               | `5000`            | The port the application runs on.                                          |
+| `TAILNET_LOCK_ENABLED`      | `NO`         | Explicit opt-in: set to `YES` if you use [Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock). Off by default, so a device needing a signature has no effect on health unless you confirm you use it. Also settable from the setup wizard or `/admin/settings`. |
+| `GLOBAL_LOCK_HEALTHY_THRESHOLD`  | `100`        | The threshold for total Tailnet Lock health, only relevant when `TAILNET_LOCK_ENABLED=YES` (a device needing a signature is unhealthy). |
+| `LOCK_SIGNER_TAGS`   | `""`              | Comma-separated, wildcard tag patterns labeling which devices are trusted Tailnet Lock signers (a "Signer" badge on the devices table/device detail page) - admin-provided, since the Tailscale API has no endpoint for this (only the `tailscale lock status` CLI does). |
+| `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_NOTIFICATION_URLS`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance's stateless endpoint. |
+| `APPRISE_NOTIFICATION_URLS` | `""`       | One or more Apprise service URLs (comma-separated), e.g. `tgram://bottoken/ChatID`, `mailto://user:pass@host`, `slack://...` - sent straight through on every notification, no server-side config needed. |
+| `APPRISE_BEARER_TOKEN` | `""`            | Optional - only if the Apprise API instance itself requires bearer-token auth. Unrelated to the notification URLs above. |
+| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`. Only listed events actually notify; empty means none do. |
+| `NOTIFY_INCLUDE_TAGS`| `""`              | Comma-separated, wildcard tag patterns scoping which devices' transitions notify (the four `device_*`/`key_expiring`... events above that are per-device; global/poll events aren't device-scoped, so this doesn't affect them). |
+| `NOTIFY_EXCLUDE_TAGS`| `""`              | Same, but exclude. `NOTIFY_INCLUDE_TAGS` takes precedence if both are set. |
+| `PORT`               | `5000`            | The port the application runs on. Process bootstrap only - not part of the settings registry, not editable via `/admin/settings`. |
 | `TIMEZONE`           | `UTC`             | The timezone for `lastSeen` adjustments. Example: `Europe/Berlin`                                  |
 | `INCLUDE_OS`         | `""`              | Filter to include only specific operating systems (comma-separated, wildcards allowed) |
 | `EXCLUDE_OS`         | `""`              | Filter to exclude specific operating systems (comma-separated, wildcards allowed)      |
@@ -290,12 +281,45 @@ The application is configured using environment variables:
 | `EXCLUDE_IDENTIFIER_UPDATE_HEALTHY` | `""`              | Filter to exclude specific devices by identifier for update health (comma-separated, wildcards allowed)  |
 | `INCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to include only specific devices by tags for update health (comma-separated, wildcards allowed) |
 | `EXCLUDE_TAG_UPDATE_HEALTHY`       | `""`              | Filter to exclude specific devices by tags for update health (comma-separated, wildcards allowed)  |
-| `CACHE_ENABLED`      | `YES`             | Enable in-memory caching of the Tailscale devices API response. Set to `NO` to disable. |
-| `CACHE_TTL_SECONDS`  | `60`              | Cache time-to-live in seconds. |
-| `CACHE_BACKEND`      | `FILE`            | Cache backend: `FILE` (shared on host), `MEMORY` (per-process), or `REDIS` (shared across instances). |
-| `REDIS_URL`          | `""`              | Redis connection URL when `CACHE_BACKEND=REDIS`, e.g., `redis://host:6379/0`. |
-| `CACHE_PREFIX`       | `ts_hc`           | Key prefix used for Redis cache keys. |
-| `CACHE_FILE_PATH`    | `/tmp/tailscale-healthcheck-cache.json` | File path when `CACHE_BACKEND=FILE` (default). |
+| `INCLUDE_KEY_TYPE`   | `""`              | Filter to include only specific tailnet key types (`api`/`auth`, comma-separated, wildcards allowed) |
+| `EXCLUDE_KEY_TYPE`   | `""`              | Filter to exclude specific tailnet key types (comma-separated, wildcards allowed) |
+| `INCLUDE_KEY_DESCRIPTION` | `""`         | Filter to include only tailnet keys whose description matches (comma-separated, wildcards allowed) |
+| `EXCLUDE_KEY_DESCRIPTION` | `""`         | Filter to exclude tailnet keys whose description matches (comma-separated, wildcards allowed) |
+
+All of the above (except `PORT` and the Gunicorn flags) are also viewable/editable at runtime via `/admin/settings`, grouped by category; fields sourced from an env var are shown as read-only there since the env var always wins.
+
+### Process bootstrap (env-only)
+
+These are read by the container entrypoint / Gunicorn itself rather than the settings registry, so
+they are **not** editable from `/admin/settings` and always require a restart:
+
+| Variable                    | Default | Description                                                                 |
+|-----------------------------|---------|-----------------------------------------------------------------------------|
+| `PORT`                      | `5000`  | Port the app binds to.                                                       |
+| `DATABASE_PATH`             | `/data/healthcheck.db` | SQLite database location. Mount a volume here to persist config, users, and history. |
+| `SECRET_KEY`                | *(generated)* | Flask session signing key. Generated and stored in the database on first run if unset. |
+| `GUNICORN_TIMEOUT`          | `60`    | Worker timeout in seconds.                                                   |
+| `GUNICORN_GRACEFUL_TIMEOUT` | `30`    | Grace period for workers to finish in-flight requests on shutdown.           |
+| `GUNICORN_MASTER_PROCESS`   | *(unset)* | Internal marker used by the Gunicorn hooks; not normally set by hand.      |
+
+### Security
+
+- **`TRUSTED_PROXY_COUNT`** (default `0`): set this to the number of reverse proxies in front of the
+  app (usually `1` behind nginx/Traefik/Caddy). It matters more than it looks: `remote_addr` drives
+  both the rate limiters **and** the failed-login lockout, so if you run behind a proxy and leave
+  this at `0`, every client appears to be the proxy - one attacker's failed logins lock out every
+  user, and the per-IP request limit silently becomes a single global one. Don't set it higher than
+  your real proxy count; the extra `X-Forwarded-For` hops are client-controlled and can be forged.
+- **`SESSION_COOKIE_SECURE`** (default `NO`): set to `YES` when serving over HTTPS so the session
+  cookie carries the `Secure` flag. It defaults off because a plain-HTTP LAN deployment would
+  otherwise be unable to log in at all.
+- **`SESSION_LIFETIME_MINUTES`** (default `43200`, i.e. 30 days): how long an admin session stays
+  valid. Lower it if sessions should expire sooner.
+- All responses carry `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: same-origin`, and a nonce-based `Content-Security-Policy`. Everything the UI
+  loads is served from the app's own origin, so no external CDN/font/script hosts are permitted.
+- All three security settings are read once at startup: saving them in `/admin/settings` persists
+  the value immediately but takes effect only after a restart.
 
 ### Logging
 
@@ -325,25 +349,47 @@ Notes:
   - With `redis://`, limits are shared across workers/instances (Flask-Limiter backend).
   - With `file://`, limits are shared on a single host via a JSON file with file locking.
 
-### Caching
+### Notifications
 
-- Enabled by default with `CACHE_TTL_SECONDS=60`.
-- Disable by setting `CACHE_ENABLED=NO`.
-- The app caches the JSON from the Tailscale `devices` API and reuses it across requests for the configured TTL.
-- Invalidation: call `GET /health/cache/invalidate` to clear the cache immediately.
-- Security: cached data contains only device info from the API; secrets remain masked elsewhere.
+- Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance's *stateless* endpoint - this app POSTs `{urls, title, body}` to `<APPRISE_API_URL>/notify` after each poll cycle. It does not bundle the `apprise` Python library and needs no server-side config: `APPRISE_NOTIFICATION_URLS` carries the actual Apprise service URL(s) (e.g. `tgram://`, `mailto://`, `slack://`) directly.
+- Off by default: leave `APPRISE_API_URL`/`APPRISE_NOTIFICATION_URLS` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
+- Fires once per *transition*, not on every poll cycle while a condition persists - e.g. a device staying unhealthy for an hour notifies once, not every `POLL_INTERVAL_SECONDS`. Nothing notifies on a device/key's first-ever appearance (avoids a notification storm on rollout).
+- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, and `poll_auth_error` aren't device-scoped and always notify regardless of these filters.
+- `device_needs_signing`/`device_signed` only fire when `TAILNET_LOCK_ENABLED=YES`, same as the rest of Tailnet Lock's behavior.
+- A failed delivery (Apprise instance unreachable, etc.) is logged as a `notification_failed` event on the `/debug` page rather than retried - it won't block or slow down polling.
+- `NOTIFICATION_COOLDOWN_MINUTES` (default `0`, off) sets a minimum gap between two notifications for the same event + device/key pair. Transitions already don't re-alert while a condition persists, but a device *flapping* across the healthy line alerts once per flap; a cooldown collapses those into one per window. Suppressed alerts appear on `/debug` as `notification_suppressed` events, so a quiet period is visibly a cooldown rather than a broken notifier.
+- A "Send test notification" button on `/admin/settings` fires a one-off test through `POST /admin/api/notifications/test`, bypassing `NOTIFICATION_EVENTS`/tag filtering - it uses whatever's currently in the form (even unsaved), falling back to the saved value for any field left blank.
 
-#### Shared Cache Across Gunicorn Workers
+### Background Polling
 
-- By default (`CACHE_BACKEND=MEMORY`), each Gunicorn worker has its own in-memory cache.
-- File-based shared cache on a single host: set `CACHE_BACKEND=FILE` and optionally `CACHE_FILE_PATH` to a writable path (e.g., `/tmp/tailscale-healthcheck-cache.json`). The app performs atomic writes and uses file locking for safe concurrent access.
-- Distributed shared cache across instances: set `CACHE_BACKEND=REDIS` and provide `REDIS_URL`.
+- A background poller (one process/worker, elected via a file lock so it only runs once even with multiple Gunicorn workers) refreshes devices and tailnet keys from the Tailscale API into SQLite every `POLL_INTERVAL_SECONDS` (default 60s).
+- `/health`, `/keys`, and the dashboard read from that SQLite snapshot - the Tailscale API is never called directly from a request.
+- Manual refresh: call `GET /health/cache/invalidate` to trigger an immediate out-of-band poll.
+- All 4 Gunicorn workers share the same SQLite database (WAL mode) for reads and writes.
 
 ### Read-Only Proxy
 
-- The proxy enforces read-only access: only `GET`, `HEAD`, and `OPTIONS` are allowed.
-- Modifying methods (`POST`, `PUT`, `PATCH`, `DELETE`) are blocked with `403 Forbidden` and attempts are logged for auditing.
-- This behavior is not user-configurable by design.
+- Every route except `/admin/*` enforces read-only access: only `GET`, `HEAD`, and `OPTIONS` are allowed. Modifying methods (`POST`, `PUT`, `PATCH`, `DELETE`) are blocked with `403 Forbidden` and attempts are logged for auditing. This behavior is not user-configurable by design.
+- `/admin/*` is the one exception: it's where the setup wizard, login, settings, user management, and audit log live, and it legitimately needs `POST`/`DELETE`. It's protected by login instead (see [Admin UI](#-admin-ui)).
+- **The entire JSON API family stays public and unauthenticated by default**: `/health`, `/health/` (redirect), `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, `/health/cache/invalidate`, and `/keys` - that's the contract existing monitoring integrations (Gatus, etc.) depend on. Only the human dashboard (`/`, `/dashboard`, `/devices`, `/tailnet-keys`, `/debug`, `/device/<identifier>`) and `/admin/*` (except the setup/login endpoints themselves) require a logged-in session.
+- The whole JSON API family can optionally be locked down with `HEALTH_ENDPOINT_TOKEN` (see Configuration) without requiring a login session - useful if you want to keep it out of a login flow (for monitoring tools) but still restrict who can query it. Leave it unset to keep it fully open, as it is by default.
+
+## 🔐 Admin UI
+
+`/admin` hosts the configuration wizard, login, settings, user management, and audit log - all backed by the SQLite database at `DATABASE_PATH`.
+
+- **First run**: if no tailnet/auth is configured (via env var or a previous wizard run) and/or no admin user exists yet, visiting the dashboard redirects to `/admin/setup`. The wizard validates the tailnet domain and API token/OAuth credentials against the real Tailscale API before saving, then creates the first admin user.
+- **Env vs. database**: whenever a setting is set as an environment variable, it always takes precedence and is synced into the database on every boot. If you later remove the env var, the last-synced value keeps being used - nothing reverts to "unconfigured". Settings sourced from an env var can't be edited in `/admin/settings` (the UI marks them read-only with the env var name); settings entered via the wizard/settings UI can be edited freely. This applies to every setting in `dbstore.py`'s `SETTINGS_REGISTRY` - connection info, health thresholds, device/key filters, rate limiting, retry/backoff, timezone, HTTP timeout, logging, and polling/audit config - not just the original tailnet connection fields.
+- **Settings that need a restart**: rate-limiting (`RATE_LIMIT_*`) and `LOG_LEVEL` are wired up once at process startup, so saving a change persists it immediately but it only takes effect after the process restarts; `/admin/settings` flags these fields accordingly. Everything else (thresholds, filters, timezone, HTTP timeout, retry/backoff, poll interval, audit retention, health endpoint token, debug log capture) applies on the next request/poll cycle with no restart.
+- **Users**: manage additional admin accounts at `/admin/users`. The last remaining user can't be deleted (to avoid a lockout); if the user table is ever emptied some other way, the setup wizard reappears to create a new one.
+- **Audit log**: `/admin/audit` shows device/tailnet-key/setting/user changes as a readable diff (per-field "old → new" for updates, a compact summary for created/removed entries, a raw-JSON toggle for the exact data), filterable by entity type, entity id, action, actor (a specific username, or "poller" for automatic changes), changed field, free-text search over the change contents, and date range - all combinable.
+  - **Changed field** narrows to entries that touched one specific field, e.g. only `os` changes or only `update_available` flips, across both the "old → new" update entries and the created/removed snapshots. Settings are excluded from this select, since a setting's "field" is its name - filter those by entity id instead.
+  - **Changes contain** is a substring search over the change data itself, so it matches *values* as well as field names: a hostname, a client version, or the old/new value of a setting. It's case-insensitive, and `%`/`_` are treated literally rather than as wildcards.
+  - Every filter (plus the current page) is stored in the query string, so a dug-out view is a shareable link and survives a reload or back/forward navigation. Only meaningful field changes are recorded (not noisy fields like `lastSeen`, and repeat pollings that produce no change never add a duplicate row); entries older than `AUDIT_RETENTION_DAYS` (default 14, editable in `/admin/settings`) are purged automatically as part of each poll cycle.
+- **API docs**: `/admin/api-docs` documents every `/health*`/`/keys` endpoint (description + params on the left, an interactive "Try it" panel on the right) with example responses and a "Try it" button that calls the live API using the configured `API_BASE_URL` (or the current origin); when `HEALTH_ENDPOINT_TOKEN` is set, an `X-Health-Token` input appears for the `/health` "Try it" panel.
+- **Debug page**: `/debug` shows the background poller's recent activity (persisted in the `poller_log` table, not just in-memory - so it survives worker restarts), filterable by event type (`poll_started`, `devices_success`, `devices_error`, `keys_success`, `keys_error`, `poll_completed`, `poll_skipped`); capture is controlled by `DEBUG_LOG_ENABLED`, retention by `POLLER_LOG_RETENTION_DAYS` (default 7).
+- **Connectivity banner**: if the background poller's most recent cycle failed - especially with a 401/403 (bad/missing/revoked credentials) - the dashboard and `/admin/settings` show a banner pointing at the fix, driven by real poll outcomes (`GET /health`'s `poll_meta.last_poll_auth_error`) rather than a frontend guess.
+- **Health endpoint token generator**: `/admin/settings` has a "Generate" button next to the `HEALTH_ENDPOINT_TOKEN` field that fills in a securely random value (server-generated via `POST /admin/api/settings/generate-token`) - it only takes effect once you save the form.
 
 ### Response Metrics
 
@@ -352,15 +398,24 @@ The API response includes the following health metrics:
 **Counter Metrics:**
 - `counter_healthy_true/false`: Number of healthy/unhealthy devices
 - `counter_healthy_online_true/false`: Number of online/offline devices
-- `counter_key_healthy_true/false`: Number of devices with valid/expired keys
+- `counter_key_healthy_true/false`: Number of devices with valid/expiring keys
+- `counter_update_healthy_true/false`: Number of devices considered up to date / needing an update. Devices exempted by the `*_UPDATE_HEALTHY` filters count as up to date here.
+- `counter_lock_healthy_true/false`: Number of devices signed / awaiting a Tailnet Lock signature (always fully "true" unless `TAILNET_LOCK_ENABLED` is on)
 
 **Global Health Metrics:**
-- `global_key_healthy`: True if key_healthy_false count is below threshold
-- `global_online_healthy`: True if healthy_online_false count is below threshold
-- `global_healthy`: True if healthy_false count is below threshold
-- `global_update_healthy`: True if update_healthy_false count is below threshold
+- `global_healthy`: True if `counter_healthy_false` is at or below `GLOBAL_HEALTHY_THRESHOLD`
+- `global_online_healthy`: True if `counter_healthy_online_false` is at or below `GLOBAL_ONLINE_HEALTHY_THRESHOLD`
+- `global_key_healthy`: True if `counter_key_healthy_false` is at or below `GLOBAL_KEY_HEALTHY_THRESHOLD`
+- `global_update_healthy`: True if `counter_update_healthy_false` is at or below `GLOBAL_UPDATE_HEALTHY_THRESHOLD`
+- `global_lock_healthy`: True if `counter_lock_healthy_false` is at or below `GLOBAL_LOCK_HEALTHY_THRESHOLD`
 
-These global metrics become false when their respective false counters exceed the GLOBAL_UNHEALTHY_THRESHOLD.
+Each global metric has its own threshold (all default to `100`) and flips to `false` once its
+false-counter rises **above** that threshold. `/keys` reports a separate `global_keys_healthy`,
+which is simply true when no monitored tailnet key is within `KEY_EXPIRY_WARNING_DAYS` of expiry.
+
+`/health`, `/health/healthy` and `/health/unhealthy` all report the same tailnet-wide `metrics`
+block; they differ only in which devices appear in `devices`. `/health/<identifier>` reports the
+same fields scoped to the single device it returns (so its counters are 1 or 0).
 
 ### Using OAuth for Authentication (!RECOMMENDED!)
 
@@ -457,6 +512,26 @@ EXCLUDE_TAG_UPDATE_HEALTHY="test*,dev*"
 
 Note: The container runs as a non-root user (`appuser`, UID 10001) following least-privilege best practices. It binds to the non-privileged port `5000`. If you need to expose a different external port, use Docker's port mapping (e.g., `-p 8080:5000`).
 
+### Run with Docker Compose
+
+The quickest way to get started. A ready-to-edit [`docker-compose.yml`](docker-compose.yml) ships in
+the repository:
+
+```bash
+docker compose up -d
+```
+
+Then open `http://localhost:5000` and complete the first-run setup wizard - you don't need to set
+any environment variables up front, since the wizard writes the tailnet domain and credentials into
+the database. The named `tailscale-healthcheck-data` volume is what makes that configuration (plus
+your admin users and audit log) survive a restart or image upgrade.
+
+To upgrade:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
 ### Build and Run Locally
 
 ### 1. **Build the Docker Image**:
@@ -466,70 +541,34 @@ Note: The container runs as a non-root user (`appuser`, UID 10001) following lea
 
 ### 2. **Run the Docker Container**:
 
-#### Using an API Key
+A `/data` volume is the only thing that's actually required - it's where the SQLite database (settings, users, device/key snapshots, audit log) lives, and without it you'd lose your configuration and admin account on every container recreation.
+
 ```bash
 docker run -d -p 5000:5000 \
-    -e TAILNET_DOMAIN="example.com" \
-    -e AUTH_TOKEN="your-api-key" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck
+  -v tailscale-healthcheck-data:/data \
+  --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
 
-#### Using OAuth
+That's it - open `http://IP-ADDRESS_OR_HOSTNAME:5000/` and the setup wizard walks you through connecting to your tailnet (API token or OAuth) and creating the first admin account. No environment variables are required for a first run.
+
+Prefer to skip the wizard (e.g. for automated/scripted deployments)? Any setting can still be pre-configured via environment variables - see [Configuration](#️-configuration) for the full list. For example:
+
 ```bash
 docker run -d -p 5000:5000 \
-    -e TAILNET_DOMAIN="example.com" \
-    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
-    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck
+  -v tailscale-healthcheck-data:/data \
+  -e TAILNET_DOMAIN="your-tailnet.ts.net" \
+  -e AUTH_TOKEN="your-api-key" \
+  --name tailscale-healthcheck laitco/tailscale-healthcheck
 ```
+
+Env vars always take precedence over whatever's saved in the database, and are synced into it on every boot - if you remove one later, the last-known value keeps being used and becomes editable in `/admin/settings` again instead of reverting to "unconfigured".
 
 ### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/
    ```
-   This opens the web dashboard with global metrics, search/filter controls, export (CSV/JSON), and device details. The raw JSON API remains available at:
+   First visit (or once no admin account exists) redirects to the setup wizard; afterwards this is the web dashboard with global metrics, search/filter controls, export (CSV/JSON), and device details - behind login. The raw JSON API remains available, unauthenticated by default, at:
    ```
    http://IP-ADDRESS_OR_HOSTNAME:5000/health
    ```
@@ -548,69 +587,18 @@ docker run -d -p 5000:5000 \
 
 ### 2. **Run the Docker Container**:
 
-#### Using an API Key
-```bash
-docker run -d -p 5000:5000 \
-    -e TAILNET_DOMAIN="example.com" \
-    -e AUTH_TOKEN="your-api-key" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
-```
+Same as above - only the `/data` volume is required, everything else is configured via the setup wizard on first visit:
 
-#### Using OAuth
 ```bash
 docker run -d -p 5000:5000 \
-    -e TAILNET_DOMAIN="example.com" \
-    -e OAUTH_CLIENT_ID="your-oauth-client-id" \
-    -e OAUTH_CLIENT_SECRET="your-oauth-client-secret" \
-    -e ONLINE_THRESHOLD_MINUTES=5 \
-    -e KEY_THRESHOLD_MINUTES=1440 \
-    -e KEY_EXPIRY_WARNING_DAYS=30 \
-    -e GLOBAL_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_ONLINE_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_KEY_HEALTHY_THRESHOLD=100 \
-    -e GLOBAL_UPDATE_HEALTHY_THRESHOLD=100 \
-    -e UPDATE_HEALTHY_IS_INCLUDED_IN_HEALTH=NO \
-    -e DISPLAY_SETTINGS_IN_OUTPUT=NO \
-    -e PORT=5000 \
-    -e TIMEZONE="Europe/Berlin" \
-    -e INCLUDE_OS="" \
-    -e EXCLUDE_OS="" \
-    -e INCLUDE_IDENTIFIER="" \
-    -e EXCLUDE_IDENTIFIER="" \
-    -e INCLUDE_TAGS="" \
-    -e EXCLUDE_TAGS="" \
-    -e INCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e EXCLUDE_IDENTIFIER_UPDATE_HEALTHY="" \
-    -e INCLUDE_TAG_UPDATE_HEALTHY="" \
-    -e EXCLUDE_TAG_UPDATE_HEALTHY="" \
-    --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
+  -v tailscale-healthcheck-data:/data \
+  --name tailscale-healthcheck laitco/tailscale-healthcheck:latest
 ```
 
 ### 3. **Access the Application**:
    Open your browser and navigate to:
    ```
-   http://IP-ADDRESS_OR_HOSTNAME:5000/health
+   http://IP-ADDRESS_OR_HOSTNAME:5000/
    ```
 
 ## 📡 Integration with Gatus Monitoring System
@@ -677,7 +665,3 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ## 🤝 Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=laitco/tailscale-healthcheck&type=Date)](https://www.star-history.com/#laitco/tailscale-healthcheck&Date)

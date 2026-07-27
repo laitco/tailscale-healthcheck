@@ -21,8 +21,10 @@ def _load_healthcheck_with_env(env: dict) -> types.ModuleType:
     return module
 
 
-def test_make_authenticated_request_uses_timeout(monkeypatch):
-    module = _load_healthcheck_with_env({"HTTP_TIMEOUT": "3"})
+def test_make_authenticated_request_uses_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("HTTP_TIMEOUT", "3")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "healthcheck.db"))
+    module = _load_healthcheck_with_env({})
 
     calls = {}
 
@@ -46,12 +48,12 @@ def test_make_authenticated_request_uses_timeout(monkeypatch):
     assert calls.get("timeout") == module.get_http_timeout()
 
 
-def test_fetch_oauth_token_uses_timeout(monkeypatch):
-    module = _load_healthcheck_with_env({
-        "HTTP_TIMEOUT": "7",
-        "OAUTH_CLIENT_ID": "abc",
-        "OAUTH_CLIENT_SECRET": "def",
-    })
+def test_fetch_oauth_token_uses_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("HTTP_TIMEOUT", "7")
+    monkeypatch.setenv("OAUTH_CLIENT_ID", "abc")
+    monkeypatch.setenv("OAUTH_CLIENT_SECRET", "def")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "healthcheck.db"))
+    module = _load_healthcheck_with_env({})
 
     calls = {}
 
@@ -86,17 +88,23 @@ def test_fetch_oauth_token_uses_timeout(monkeypatch):
     assert module.ACCESS_TOKEN == "token123"
 
 
-def test_health_endpoint_times_out_gracefully(monkeypatch):
-    module = _load_healthcheck_with_env({"HTTP_TIMEOUT": "1", "CACHE_ENABLED": "NO"})
+def test_poll_cycle_times_out_gracefully(monkeypatch, tmp_path):
+    # /health now reads from the SQLite snapshot (poller.py owns the network
+    # call), so the timeout-resilience behavior lives in a poll cycle now.
+    # NB: monkeypatch.setenv (not the raw env dict passed to the loader,
+    # which never restores) so TAILNET_DOMAIN/DATABASE_PATH don't leak into
+    # later tests in the same pytest session.
+    monkeypatch.setenv("TAILNET_DOMAIN", "example.ts.net")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "healthcheck.db"))
+    monkeypatch.setenv("HTTP_TIMEOUT", "1")
+    module = _load_healthcheck_with_env({})
+    import poller
 
     def raise_timeout(*_a, **_kw):
         raise requests.exceptions.Timeout("simulated timeout")
 
-    # Make the underlying HTTP call time out
     monkeypatch.setattr(module.requests, "get", raise_timeout)
 
-    client = module.app.test_client()
-    res = client.get("/health")
-    assert res.status_code == 504
-    data = res.get_json()
-    assert "timed out" in data.get("error", "").lower()
+    # Should not raise; failures are caught and logged per-fetch.
+    poller.run_poll_cycle()
+    assert module.dbstore.get_devices_snapshot() == []

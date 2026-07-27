@@ -1,0 +1,63 @@
+"""Flask-Login wiring for the /admin UI. dbstore.users is the source of truth."""
+from datetime import timedelta
+
+from flask import jsonify, redirect, request, url_for
+from flask_login import LoginManager, UserMixin
+
+import dbstore
+
+login_manager = LoginManager()
+login_manager.login_view = "admin.login_page"
+
+
+@login_manager.unauthorized_handler
+def _unauthorized():
+    """JSON 401 for /admin/api/* fetch calls, HTML redirect for page routes.
+
+    Flask-Login's default behavior (redirect to login_view) makes sense for
+    the HTML shell routes (settings/users/audit/profile pages - a browser
+    navigation should land on the login page), but a `fetch()` call from the
+    SPA to /admin/api/* would silently follow that redirect and see a 200
+    HTML response instead of a 401, e.g. when a session expires, a user is
+    deleted, or logout happens in another tab - leaving admin pages stuck
+    instead of bouncing back to login.
+    """
+    if request.path.startswith("/admin/api/"):
+        return jsonify({"error": "Unauthorized"}), 401
+    return redirect(url_for("admin.login_page"))
+
+
+class User(UserMixin):
+    def __init__(self, user_id: int, username: str):
+        self.id = str(user_id)
+        self.username = username
+
+    @staticmethod
+    def from_row(row: dict):
+        if not row:
+            return None
+        return User(row["id"], row["username"])
+
+
+@login_manager.user_loader
+def load_user(user_id: str):
+    try:
+        row = dbstore.get_user_by_id(int(user_id))
+    except (TypeError, ValueError):
+        return None
+    return User.from_row(row)
+
+
+def init_app(app):
+    # Assigned, not setdefault()'d: Flask pre-populates every SESSION_COOKIE_*
+    # key in app.config (SAMESITE=None, SECURE=False, and a 31-day lifetime),
+    # so setdefault() silently never applied any of these - the SameSite=Lax
+    # this app relies on to blunt cross-site POSTs was not actually in effect.
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # Read once at startup, hence listed in admin.RESTART_REQUIRED_SETTINGS.
+    app.config["SESSION_COOKIE_SECURE"] = dbstore.get_setting_typed("session_cookie_secure")
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+        minutes=max(1, dbstore.get_setting_typed("session_lifetime_minutes"))
+    )
+    login_manager.init_app(app)

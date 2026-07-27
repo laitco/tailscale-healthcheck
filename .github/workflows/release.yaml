@@ -28,36 +28,59 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute next patch version
+      - name: Compute next version
         id: bump
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --tags --quiet
           CURRENT=$(cat VERSION | tr -d '[:space:]')
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if git rev-parse -q --verify "refs/tags/$CURRENT" >/dev/null; then
+            # CURRENT has already shipped as a tag - this is the normal case,
+            # bump the patch for the next release.
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "$NEXT" > VERSION
+          else
+            # CURRENT hasn't been tagged/released yet - e.g. a deliberate
+            # manual minor/major bump landed on main. Release it as-is
+            # instead of bumping straight past it; VERSION is left
+            # untouched (it already says the right thing).
+            NEXT="$CURRENT"
+          fi
           echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "$NEXT" > VERSION
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+          # create-pull-request (below) only opens/updates a PR when there's
+          # an actual diff to commit. VERSION alone has no diff in the
+          # untagged-CURRENT case above, which would otherwise silently skip
+          # opening the release PR and never trigger publish_release at all -
+          # this marker file (its own content, not just a timestamp) always
+          # changes when the target release version changes, guaranteeing a
+          # PR is opened either way while staying a no-op once that PR exists
+          # and nothing new has landed since.
+          mkdir -p .github
+          {
+            echo "Pending release: $NEXT"
+            echo "Computed at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > .github/RELEASE_PENDING.md
 
       - name: Generate release notes preview
         id: gen_notes
         uses: actions/github-script@v7
         with:
           script: |
-            const prev = process.env.PREV_TAG;
-            const payload = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+            const { generateReleaseNotesWithBreakingChangeDetails } = require('./.github/scripts/release-notes.js');
+            const body = await generateReleaseNotesWithBreakingChangeDetails(github, context, core, {
               tag_name: process.env.NEXT_VERSION,
-              target_commitish: context.sha,
-            };
-            if (prev) payload.previous_tag_name = prev;
-            const notes = await github.rest.repos.generateReleaseNotes(payload);
-            core.setOutput('body', notes.data.body || '');
+              previous_tag_name: process.env.PREV_TAG,
+            });
+            core.setOutput('body', body);
           result-encoding: string
         env:
-          PREV_TAG: ${{ steps.bump.outputs.current }}
+          PREV_TAG: ${{ steps.bump.outputs.prev_tag }}
           NEXT_VERSION: ${{ steps.bump.outputs.next }}
 
       - name: Open or update release PR
@@ -104,17 +127,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const version = process.env.VERSION;
-            const prev = process.env.PREV_TAG;
-            const payload = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: version,
-              target_commitish: context.sha,
-            };
-            if (prev) payload.previous_tag_name = prev;
-            const notes = await github.rest.repos.generateReleaseNotes(payload);
-            core.setOutput('body', notes.data.body || '');
+            const { generateReleaseNotesWithBreakingChangeDetails } = require('./.github/scripts/release-notes.js');
+            const body = await generateReleaseNotesWithBreakingChangeDetails(github, context, core, {
+              tag_name: process.env.VERSION,
+              previous_tag_name: process.env.PREV_TAG,
+            });
+            core.setOutput('body', body);
           result-encoding: string
         env:
           VERSION: ${{ steps.version.outputs.version }}

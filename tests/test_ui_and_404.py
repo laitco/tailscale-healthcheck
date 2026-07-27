@@ -24,6 +24,21 @@ def _load_healthcheck_with_env(env: dict) -> types.ModuleType:
         os.environ.update(old_env)
 
 
+def _logged_in_client(m):
+    """Create a user and return a test client with an authenticated session.
+
+    The dashboard shell routes are now gated behind setup-complete + login.
+    """
+    m.dbstore.create_user("tester", "correct-horse-battery-staple")
+    client = m.app.test_client()
+    resp = client.post(
+        "/admin/api/login",
+        json={"username": "tester", "password": "correct-horse-battery-staple"},
+    )
+    assert resp.status_code == 200
+    return client
+
+
 def _sample_devices():
     tz = pytz.UTC
     now = datetime.now(tz)
@@ -58,13 +73,14 @@ def _sample_devices():
 
 
 @pytest.fixture
-def module():
+def module(tmp_path):
     m = _load_healthcheck_with_env({
-        "CACHE_ENABLED": "NO",
         "DISPLAY_SETTINGS_IN_OUTPUT": "NO",
         "ONLINE_THRESHOLD_MINUTES": "5",
         "KEY_THRESHOLD_MINUTES": "1440",
         "RATE_LIMIT_ENABLED": "NO",
+        "TAILNET_DOMAIN": "example.ts.net",
+        "DATABASE_PATH": str(tmp_path / "healthcheck.db"),
     })
     # monkeypatch fetch_devices
     m.fetch_devices = lambda: _sample_devices()
@@ -72,40 +88,57 @@ def module():
 
 
 def test_dashboard_renders(module):
-    app = module.app
-    client = app.test_client()
+    # The dashboard is a client-rendered React app; the Flask route only
+    # serves the mount shell that loads the built bundle.
+    client = _logged_in_client(module)
     resp = client.get("/")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "Tailscale Healthcheck" in body
-    assert "dev1" in body
+    assert '<div id="root"></div>' in body
+    assert "/static/app/app.js" in body
 
 
-def test_dashboard_settings_render_when_enabled():
+def test_health_response_has_no_settings_block(tmp_path):
+    # DISPLAY_SETTINGS_IN_OUTPUT and the settings-dump-in-JSON feature were
+    # retired: full settings (including secrets, masked) now live behind
+    # login at /admin/api/settings instead of being embedded in the public
+    # /health response.
     m = _load_healthcheck_with_env({
-        "CACHE_ENABLED": "NO",
-        "DISPLAY_SETTINGS_IN_OUTPUT": "YES",
         "ONLINE_THRESHOLD_MINUTES": "5",
         "KEY_THRESHOLD_MINUTES": "1440",
         "RATE_LIMIT_ENABLED": "NO",
         "TAILNET_DOMAIN": "example.com",
+        "DATABASE_PATH": str(tmp_path / "healthcheck.db"),
     })
     m.fetch_devices = lambda: _sample_devices()
     client = m.app.test_client()
-    resp = client.get("/")
+    resp = client.get("/health")
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "Settings (redacted)" in html
-    assert "TAILNET_DOMAIN" in html
-    assert "RATE_LIMIT_ENABLED" in html
+    data = resp.get_json()
+    assert "settings" not in data
 
 
 def test_device_detail_renders(module):
-    app = module.app
-    client = app.test_client()
+    # Device data (including whether the identifier even exists) is fetched
+    # client-side from /health/<identifier>; the Flask route only serves the
+    # shell, unconditionally, so a slow/failing upstream never blocks it.
+    client = _logged_in_client(module)
     resp = client.get("/device/dev1")
     assert resp.status_code == 200
-    assert "dev1" in resp.get_data(as_text=True)
+    body = resp.get_data(as_text=True)
+    assert '<div id="root"></div>' in body
+    assert "/static/app/app.js" in body
+
+
+def test_devices_and_tailnet_keys_and_debug_shells_render(module):
+    client = _logged_in_client(module)
+    for path in ("/devices", "/tailnet-keys", "/debug"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert '<div id="root"></div>' in body
+        assert "/static/app/app.js" in body
 
 
 def test_404_json_when_requested(module):
@@ -118,9 +151,13 @@ def test_404_json_when_requested(module):
 
 
 def test_404_ui_for_html(module):
+    # The 404 message itself is rendered client-side by the React app's
+    # not-found route; the Flask route just serves the mount shell with a
+    # 404 status and title.
     app = module.app
     client = app.test_client()
     resp = client.get("/missing")
     assert resp.status_code == 404
     body = resp.get_data(as_text=True)
-    assert "404 Not Found" in body
+    assert "404" in body
+    assert '<div id="root"></div>' in body
