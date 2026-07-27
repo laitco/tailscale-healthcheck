@@ -42,6 +42,7 @@
   - [Generating the Tailscale API Key](#generating-the-tailscale-api-key)
   - [Filter Configuration Examples](#filter-configuration-examples)
 - [🐳 Running with Docker](#-running-with-docker)
+  - [Storage & permissions](#storage--permissions)
   - [Run with Docker Compose](#run-with-docker-compose)
   - [Build and Run Locally](#build-and-run-locally)
   - [Run from Docker Hub](#run-from-docker-hub)
@@ -511,6 +512,36 @@ EXCLUDE_TAG_UPDATE_HEALTHY="test*,dev*"
 ## 🐳 Running with Docker
 
 Note: The container runs as a non-root user (`appuser`, UID 10001) following least-privilege best practices. It binds to the non-privileged port `5000`. If you need to expose a different external port, use Docker's port mapping (e.g., `-p 8080:5000`).
+
+### Storage & permissions
+
+The app keeps everything (settings, users, device/key snapshots, audit log) in a SQLite database
+under `/data`, so that directory has to be writable by the container. This is handled automatically
+— **you should not normally need to configure anything**:
+
+| How you mount `/data` | What happens |
+|---|---|
+| Docker **named volume** (recommended) | Docker seeds it from the image; works as-is. |
+| **Bind mount** on a normal Linux filesystem | The container starts as root, takes ownership, then drops to the unprivileged `appuser` (uid `10001`). |
+| **Bind mount** on **CIFS/SMB or NFS** (typical NAS setup) | `chown` is refused there — ownership comes from the mount options — so the container instead runs *as the uid the share is mounted as*, and logs a `NOTE` saying so. |
+| Hardened runtime (Kubernetes `runAsUser`, `docker run --user`) | Runs as the uid you specified, unchanged. |
+
+If none of those can write, the container **fails immediately with an explanation** instead of
+crash-looping on an opaque `sqlite3.OperationalError: unable to open database file`.
+
+**`PUID` / `PGID`** (default `10001` / `999`) override the whole thing when you want a specific uid —
+for example to make the database files owned by your own user on a NAS:
+
+```bash
+docker run -e PUID=1000 -e PGID=1000 -v /volume1/docker/tailscale-healthcheck:/data ...
+```
+
+Set explicitly, they are honoured exactly: the container will fail with a clear error rather than
+quietly running as some other user.
+
+> The image's own user is uid `10001` rather than the more familiar `1000` deliberately — it's a
+> reserved system-range id, so it can't collide with a real account on the host. You do not need to
+> match it; the table above means the container adapts to your storage, not the other way round.
 
 ### Run with Docker Compose
 

@@ -71,11 +71,18 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python3 /app/docker-healthcheck.py || exit 1
 
 # Starts as root by default so the entrypoint can fix /data ownership for
-# arbitrary bind mounts, then drops to appuser via gosu before exec'ing
+# arbitrary bind mounts, then drops to PUID:PGID via gosu before exec'ing
 # gunicorn - but the entrypoint also works correctly if a hardened runtime
 # (e.g. Kubernetes runAsUser/runAsNonRoot) already starts it as non-root:
 # it detects that and just execs directly, skipping the chown/gosu steps it
 # wouldn't have permission for anyway (see docker-entrypoint.sh).
+#
+# PUID/PGID default to appuser:app (10001:999) - i.e. unchanged behavior -
+# and exist for bind mounts on CIFS/SMB or NFS, where ownership is fixed by
+# the mount options and chown can never succeed. There, set them to the
+# uid/gid the share is mounted as instead of trying to chown it.
+ENV PUID=10001
+ENV PGID=999
 ENTRYPOINT ["docker-entrypoint.sh"]
 # --preload imports the app once in the master and forks workers from it, so
 # the interpreter, imports, and module-level setup are shared copy-on-write
