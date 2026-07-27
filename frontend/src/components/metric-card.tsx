@@ -44,7 +44,10 @@ export function MetricCard({
         >
           {value}
         </div>
-        {subtitle && <div className="mt-1 text-xs text-muted-foreground">{subtitle}</div>}
+        {/* Always reserve this line's height, even without a subtitle - otherwise a
+            card with one (e.g. "Overall Health") sits its trend chart lower than its
+            siblings in the same row, breaking the grid's visual alignment. */}
+        <div className={cn('mt-1 text-xs text-muted-foreground', !subtitle && 'invisible')}>{subtitle || ' '}</div>
         {trend && trend.length >= 2 && (
           <div className="mt-4">
             <Sparkline
