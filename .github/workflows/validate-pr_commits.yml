@@ -53,6 +53,12 @@ jobs:
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
+        with:
+          # The action reads the pnpm version from the "packageManager" field,
+          # but defaults to a package.json at the repository root - and this
+          # repo only has one under frontend/, so it must be pointed at it
+          # explicitly or it fails with "No pnpm version is specified".
+          package_json_file: frontend/package.json
 
       - name: Set up Node
         uses: actions/setup-node@v4
