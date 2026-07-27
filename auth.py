@@ -1,4 +1,6 @@
 """Flask-Login wiring for the /admin UI. dbstore.users is the source of truth."""
+from datetime import timedelta
+
 from flask import jsonify, redirect, request, url_for
 from flask_login import LoginManager, UserMixin
 
@@ -47,6 +49,15 @@ def load_user(user_id: str):
 
 
 def init_app(app):
-    app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
-    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    # Assigned, not setdefault()'d: Flask pre-populates every SESSION_COOKIE_*
+    # key in app.config (SAMESITE=None, SECURE=False, and a 31-day lifetime),
+    # so setdefault() silently never applied any of these - the SameSite=Lax
+    # this app relies on to blunt cross-site POSTs was not actually in effect.
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # Read once at startup, hence listed in admin.RESTART_REQUIRED_SETTINGS.
+    app.config["SESSION_COOKIE_SECURE"] = dbstore.get_setting_typed("session_cookie_secure")
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+        minutes=max(1, dbstore.get_setting_typed("session_lifetime_minutes"))
+    )
     login_manager.init_app(app)

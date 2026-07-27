@@ -146,3 +146,28 @@ def test_metrics_history_record_and_purge(tmp_path):
         conn.execute("UPDATE metrics_history SET occurred_at = '2000-01-01T00:00:00+00:00'")
     dbstore.purge_metrics_history(retention_hours=48)
     assert dbstore.get_metrics_history(hours=24 * 365) == []
+
+
+def test_every_registry_setting_is_rendered_by_the_settings_ui():
+    """The admin settings page renders from a hardcoded FIELDS_BY_GROUP list in
+    frontend/src/pages/admin-settings.tsx, not from the registry - so adding a
+    setting to SETTINGS_REGISTRY without adding it there leaves it invisible
+    and un-editable in the UI, with no error anywhere to say so.
+
+    Guards the group list too: a setting in a group missing from GROUP_ORDER is
+    equally invisible, since that array is what the page iterates.
+    """
+    import re
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    page = open(os.path.join(root, "frontend/src/pages/admin-settings.tsx"), encoding="utf-8").read()
+
+    rendered = set(re.findall(r"\{\s*name:\s*'([a-z0-9_]+)'", page))
+    group_order = set(re.findall(r"'([a-z_]+)'", page.split("] as const", 1)[0]))
+
+    missing = sorted(set(dbstore.SETTINGS_REGISTRY) - rendered)
+    assert not missing, f"settings missing from the admin UI's FIELDS_BY_GROUP: {missing}"
+
+    groups = {meta[4] for meta in dbstore.SETTINGS_REGISTRY.values()}
+    missing_groups = sorted(groups - group_order)
+    assert not missing_groups, f"groups missing from the admin UI's GROUP_ORDER: {missing_groups}"

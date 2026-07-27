@@ -8,14 +8,17 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { TagInput } from '@/components/ui/tag-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { fetchSettings, updateSettings, pollNow, generateToken, testNotification, AdminApiError } from '@/lib/admin-api'
+import { fetchSettings, updateSettings, pollNow, generateToken, testNotification, errorMessage } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
+import { formatDateTime } from '@/lib/format'
+import { useToast } from '@/lib/toast'
 import { useHealthContext } from '@/lib/health-context'
 import type { SettingField, SettingsResponse } from '@/lib/types'
 
 type FieldDef = { name: string; label: string; unit?: string; help?: string; generatable?: boolean }
 
 const GROUP_ORDER = [
-  'connection', 'thresholds', 'filters', 'notifications', 'general', 'logging', 'rate_limit', 'retry', 'poll',
+  'connection', 'thresholds', 'filters', 'notifications', 'general', 'security', 'logging', 'rate_limit', 'retry', 'poll',
 ] as const
 
 const GROUP_LABELS: Record<string, string> = {
@@ -24,6 +27,7 @@ const GROUP_LABELS: Record<string, string> = {
   filters: 'Filters',
   notifications: 'Notifications',
   general: 'General',
+  security: 'Security',
   logging: 'Logging',
   rate_limit: 'Rate Limiting',
   retry: 'Retry / Backoff',
@@ -36,6 +40,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   filters: 'Comma-separated glob patterns (e.g. tag:prod, *.example.com). Press Enter or comma to add an entry.',
   notifications: 'Alert via an already-running Apprise API instance (apprise-api) - channel setup (Slack, email, ...) lives on that instance, not here.',
   general: 'Miscellaneous behavior settings.',
+  security: 'Session and reverse-proxy handling. All three take effect only after a process restart.',
   logging: 'Application log verbosity.',
   rate_limit: 'Protect the API from excessive request volume.',
   retry: 'Backoff behavior for retried Tailscale API requests.',
@@ -136,10 +141,34 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
       help: "Scopes which devices' transitions notify (device_unhealthy/device_healthy_again/device_needs_signing/device_signed only - global/poll events aren't device-scoped). Wins over Notify: exclude tags.",
     },
     { name: 'notify_exclude_tags', label: 'Notify: exclude tags', help: 'Same as Notify: include tags, but by exclusion pattern instead. Ignored if include is set.' },
+    {
+      name: 'notification_cooldown_minutes',
+      label: 'Notification cooldown',
+      unit: 'minutes',
+      help: 'Minimum gap between two notifications for the same event and device/key. Alerts already only fire on a transition, but a device flapping across the healthy line still alerts once per flap - a cooldown collapses those into one. 0 disables it. Suppressed alerts show on the Debug page as notification_suppressed events.',
+    },
   ],
   general: [
     { name: 'timezone', label: 'Timezone', help: "IANA timezone (e.g. Europe/Berlin) used for lastSeen and key-expiry timestamps shown throughout the app." },
     { name: 'http_timeout', label: 'HTTP timeout', unit: 'seconds', help: 'Timeout for outbound requests to the Tailscale API.' },
+  ],
+  security: [
+    {
+      name: 'trusted_proxy_count',
+      label: 'Trusted proxy count',
+      help: 'Number of reverse proxies in front of this app (usually 1 behind nginx/Traefik/Caddy, 0 if exposed directly). This decides whether X-Forwarded-For is trusted for the client address, which both the rate limiter and the failed-login lockout key off - leave it at 0 behind a proxy and one attacker locks out every user. Never set it higher than your real proxy count.',
+    },
+    {
+      name: 'session_cookie_secure',
+      label: 'Secure session cookie (HTTPS only)',
+      help: 'Adds the Secure flag to the admin session cookie. Turn this on once you serve the app over HTTPS; leaving it on over plain HTTP makes login impossible, since the browser will refuse to send the cookie back.',
+    },
+    {
+      name: 'session_lifetime_minutes',
+      label: 'Session lifetime',
+      unit: 'minutes',
+      help: 'How long an admin stays logged in (default 43200 = 30 days). Lower it if sessions should expire sooner.',
+    },
   ],
   logging: [
     { name: 'log_level', label: 'Log level', help: 'Application log verbosity. Takes effect after a process restart only.' },
@@ -288,9 +317,16 @@ export default function AdminSettingsPage() {
   const [polling, setPolling] = useState(false)
   const [testingNotification, setTestingNotification] = useState(false)
   const [testResult, setTestResult] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const { notify } = useToast()
 
   function load() {
-    fetchSettings().then((data) => setSettings(data))
+    // Without this catch the rejection was unhandled and `settings` stayed
+    // null, pinning the page to <Skeleton className="h-96" /> permanently.
+    setLoadError(null)
+    fetchSettings()
+      .then((data) => setSettings(data))
+      .catch((err) => setLoadError(errorMessage(err, 'Failed to load settings')))
   }
 
   useEffect(load, [])
@@ -299,6 +335,17 @@ export default function AdminSettingsPage() {
     if (!settings) return []
     return GROUP_ORDER.filter((g) => FIELDS_BY_GROUP[g]?.some((f) => settings[f.name]))
   }, [settings])
+
+  if (loadError) {
+    return (
+      <div className="space-y-3">
+        <Alert>{loadError}</Alert>
+        <Button variant="outline" size="sm" onClick={load}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
 
   if (!settings) {
     return <Skeleton className="h-96" />
@@ -326,7 +373,7 @@ export default function AdminSettingsPage() {
         : ''
       setMessage({ kind: 'success', text: `Settings saved.${restartNote}` })
     } catch (err) {
-      setMessage({ kind: 'error', text: err instanceof AdminApiError ? err.message : 'Failed to save settings' })
+      setMessage({ kind: 'error', text: errorMessage(err, 'Failed to save settings') })
     } finally {
       setSaving(false)
     }
@@ -337,6 +384,11 @@ export default function AdminSettingsPage() {
     try {
       await pollNow()
       load()
+      notify('Poll triggered.')
+    } catch (err) {
+      // Previously swallowed entirely: the spinner stopped and nothing else
+      // happened, so a failed manual poll was indistinguishable from success.
+      notify(errorMessage(err, 'Failed to trigger a poll'), 'error')
     } finally {
       setPolling(false)
     }
@@ -357,7 +409,7 @@ export default function AdminSettingsPage() {
       await testNotification(overrides)
       setTestResult({ kind: 'success', text: 'Test notification sent - check your configured destination.' })
     } catch (err) {
-      setTestResult({ kind: 'error', text: err instanceof AdminApiError ? err.message : 'Failed to send test notification' })
+      setTestResult({ kind: 'error', text: errorMessage(err, 'Failed to send test notification') })
     } finally {
       setTestingNotification(false)
     }
@@ -501,26 +553,20 @@ export default function AdminSettingsPage() {
         </div>
 
         {message && (
-          <div
-            className={
-              message.kind === 'error'
-                ? 'rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive'
-                : 'rounded-md border border-primary/30 bg-primary/10 p-2 text-xs text-primary'
-            }
-          >
+          <Alert variant={message.kind === 'error' ? 'destructive' : 'success'} className="p-2 text-xs">
             {message.text}
-          </div>
+          </Alert>
         )}
 
         {settings._meta.last_poll_auth_error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+          <Alert>
             <p className="font-medium">Unable to reach the Tailscale API</p>
             <p className="text-xs text-destructive/90">
               The configured auth token or OAuth credentials appear to be missing, incorrect, or revoked. Check the
               fields in the Connection group below.
               {settings._meta.last_poll_error ? ` (${settings._meta.last_poll_error})` : ''}
             </p>
-          </div>
+          </Alert>
         )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -557,7 +603,7 @@ export default function AdminSettingsPage() {
           <CardDescription>
             Devices and tailnet keys refresh every {settings._meta.poll_interval_seconds}s.
             {settings._meta.last_polled_at
-              ? ` Last polled: ${new Date(settings._meta.last_polled_at).toLocaleString()}.`
+              ? ` Last polled: ${formatDateTime(settings._meta.last_polled_at, String(settings.timezone?.value ?? ''))}.`
               : ' Not polled yet.'}
           </CardDescription>
         </CardHeader>

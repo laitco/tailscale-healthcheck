@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Download } from 'lucide-react'
 import { KeysTable } from '@/components/keys-table'
 import { Input } from '@/components/ui/input'
@@ -6,26 +6,24 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useHealthContext } from '@/lib/health-context'
-import { downloadBlob } from '@/lib/format'
+import { useUrlState } from '@/lib/use-url-state'
+import { Pagination } from '@/components/pagination'
+import { downloadBlob, toCsv } from '@/lib/format'
 import type { TailnetKey } from '@/lib/types'
+import { Alert } from '@/components/ui/alert'
 
 const ALL = '__all__'
 
-function keysToCsv(items: TailnetKey[]): string {
-  if (!items.length) return ''
-  const cols = ['id', 'description', 'keyType', 'created', 'expires', 'key_healthy', 'key_days_to_expire']
-  const esc = (v: unknown) => '"' + String(v ?? '').replaceAll('"', '""') + '"'
-  const lines = [cols.join(',')]
-  for (const it of items) {
-    lines.push(cols.map((c) => esc(it[c])).join(','))
-  }
-  return lines.join('\n')
-}
+const KEY_CSV_COLUMNS = ['id', 'description', 'keyType', 'created', 'expires', 'key_healthy', 'key_days_to_expire']
+
+const PAGE_SIZE = 50
 
 export default function TailnetKeysPage() {
   const { keys, loading, error } = useHealthContext()
-  const [search, setSearch] = useState('')
-  const [keyType, setKeyType] = useState(ALL)
+  const [search, setSearch] = useUrlState('q', '')
+  const [keyType, setKeyType] = useUrlState('type', ALL)
+  const [offsetParam, setOffsetParam] = useUrlState('offset', '0')
+  const offset = Math.max(0, parseInt(offsetParam, 10) || 0)
 
   const allKeys = keys?.keys ?? []
 
@@ -46,15 +44,18 @@ export default function TailnetKeysPage() {
     })
   }, [allKeys, search, keyType])
 
+  const pageOffset = offset >= filtered.length ? 0 : offset
+  const page = filtered.slice(pageOffset, pageOffset + PAGE_SIZE)
+
   if (loading && !keys) {
     return <Skeleton className="h-96" />
   }
 
   if (error && !keys) {
     return (
-      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+      <Alert>
         Failed to load tailnet keys: {error}
-      </div>
+      </Alert>
     )
   }
 
@@ -81,7 +82,7 @@ export default function TailnetKeysPage() {
           </SelectContent>
         </Select>
         <div className="flex-1" />
-        <Button variant="outline" onClick={() => downloadBlob(keysToCsv(filtered), 'tailnet-keys.csv', 'text/csv')}>
+        <Button variant="outline" onClick={() => downloadBlob(toCsv(filtered as unknown as Record<string, unknown>[], KEY_CSV_COLUMNS), 'tailnet-keys.csv', 'text/csv')}>
           <Download />
           CSV
         </Button>
@@ -94,7 +95,15 @@ export default function TailnetKeysPage() {
         </Button>
       </section>
 
-      <KeysTable keys={filtered} metrics={keys!.metrics} />
+      <KeysTable keys={page} metrics={keys!.metrics} />
+
+      <Pagination
+        offset={pageOffset}
+        pageSize={PAGE_SIZE}
+        total={filtered.length}
+        noun="key"
+        onOffsetChange={(next) => setOffsetParam(String(next))}
+      />
     </div>
   )
 }

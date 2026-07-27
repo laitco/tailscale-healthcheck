@@ -394,3 +394,161 @@ def test_delete_user_last_user_guard_is_atomic(tmp_path):
     # ...but now only 1 remains, so deleting the last one is refused.
     assert dbstore.delete_user("bob") == "last_user"
     assert dbstore.has_any_user()
+
+
+def test_count_audit_log_matches_list_filters(tmp_path):
+    """The pagination total must be computed with exactly the same filters as
+    the page itself, or the UI reports a count it can't actually page to."""
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+
+    for i in range(7):
+        dbstore.set_setting(f"setting_{i}", "x", actor="alice")
+    for i in range(3):
+        dbstore.set_setting(f"other_{i}", "x", actor="bob")
+
+    assert dbstore.count_audit_log(actor="alice") == 7
+    assert dbstore.count_audit_log(actor="bob") == 3
+    assert dbstore.count_audit_log() == 10
+
+    # A limited page doesn't change the total it reports alongside itself.
+    page = dbstore.list_audit_log(limit=4, actor="alice")
+    assert len(page) == 4
+    assert dbstore.count_audit_log(actor="alice") == 7
+
+    # Offsetting past the end yields no rows but the same total.
+    assert dbstore.list_audit_log(limit=4, offset=100, actor="alice") == []
+    assert dbstore.count_audit_log(actor="alice") == 7
+
+
+def test_set_health_state_bulk_matches_single_writes(tmp_path):
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+
+    dbstore.set_health_state_bulk("device", {"d1": True, "d2": False, "d3": True})
+    assert dbstore.get_health_state("device") == {"d1": True, "d2": False, "d3": True}
+
+    # Upserts, not inserts - re-writing an existing id flips it in place.
+    dbstore.set_health_state_bulk("device", {"d1": False, "d4": True})
+    assert dbstore.get_health_state("device") == {"d1": False, "d2": False, "d3": True, "d4": True}
+
+    # An empty batch is a no-op, not a wipe.
+    dbstore.set_health_state_bulk("device", {})
+    assert len(dbstore.get_health_state("device")) == 4
+
+
+def test_purge_login_rate_limit_drops_only_closed_windows(tmp_path):
+    """The table had no purge at all, so it grew one permanent row per source
+    IP that ever attempted a login."""
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+
+    assert dbstore.check_login_rate_limit("10.0.0.1") is True
+    with dbstore.get_connection() as conn:
+        conn.execute("INSERT INTO login_rate_limit (ip, window_start, count) VALUES ('10.0.0.2', 0, 5)")
+
+    dbstore.purge_login_rate_limit()
+
+    with dbstore.get_connection() as conn:
+        remaining = {r["ip"] for r in conn.execute("SELECT ip FROM login_rate_limit")}
+    assert remaining == {"10.0.0.1"}, "current window must survive, ancient one must not"
+
+
+def test_get_settings_meta_matches_per_setting_lookup(tmp_path, monkeypatch):
+    """The batched variant backing the settings page must agree with the
+    single-setting one it replaced, including env-vs-db source attribution."""
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+    dbstore.set_setting("online_threshold_minutes", 42)
+    monkeypatch.setenv("TIMEZONE", "Europe/Berlin")
+
+    names = ["online_threshold_minutes", "timezone", "exclude_os"]
+    batched = dbstore.get_settings_meta(names)
+
+    for name in names:
+        assert batched[name] == dbstore.get_setting_meta(name), name
+    assert batched["timezone"]["source"] == "env"
+    assert batched["online_threshold_minutes"]["source"] == "db"
+    assert batched["exclude_os"]["source"] is None
+
+
+def _seed_change_rows(tmp_path):
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+    with dbstore.get_connection() as conn:
+        rows = [
+            # device "updated" shape: {field: {old, new}}
+            ("device", "d1", "updated", {"os": {"old": "linux", "new": "windows"}}),
+            ("device", "d2", "updated", {"client_version": {"old": "1.0", "new": "1.1"}}),
+            # device "created" snapshot shape: {field: value}
+            ("device", "d3", "created", {"os": "linux", "hostname": "ReverseProxy"}),
+            # setting shape: the field IS the entity_id, top-level keys are meta
+            ("setting", "log_level", "updated", {"old": "INFO", "new": "DEBUG", "source": "db"}),
+        ]
+        for entity_type, entity_id, action, changes in rows:
+            dbstore._add_audit(conn, entity_type, entity_id, action, changes)
+
+
+def test_audit_changed_field_filter(tmp_path):
+    """Filtering by changed field must match both the {field: {old,new}} update
+    shape and the {field: value} created/removed snapshot shape."""
+    _seed_change_rows(tmp_path)
+
+    os_rows = dbstore.list_audit_log(changed_field="os")
+    assert {r["entity_id"] for r in os_rows} == {"d1", "d3"}
+    assert dbstore.count_audit_log(changed_field="os") == 2
+
+    assert dbstore.count_audit_log(changed_field="client_version") == 1
+    assert dbstore.count_audit_log(changed_field="nonexistent_field") == 0
+
+    # A setting row's wrapper keys are not addressable as fields - a setting's
+    # field is its entity_id, which the existing entity_id filter covers.
+    assert dbstore.count_audit_log(changed_field="source") == 0
+
+
+def test_audit_changed_field_options_exclude_setting_wrappers(tmp_path):
+    _seed_change_rows(tmp_path)
+
+    fields = dbstore.list_audit_log_changed_fields()
+    assert fields == ["client_version", "hostname", "os"]
+    for meta in ("old", "new", "source"):
+        assert meta not in fields
+
+    assert dbstore.list_audit_log_changed_fields("setting") == []
+    assert dbstore.list_audit_log_changed_fields("device") == ["client_version", "hostname", "os"]
+
+
+def test_audit_changes_contains_search(tmp_path):
+    """Free-text search covers values, not just field names - that's the point
+    of it next to the changed-field select."""
+    _seed_change_rows(tmp_path)
+
+    assert {r["entity_id"] for r in dbstore.list_audit_log(changes_contains="windows")} == {"d1"}
+    # Case-insensitive, and matches a value buried in a snapshot row.
+    assert {r["entity_id"] for r in dbstore.list_audit_log(changes_contains="reverseproxy")} == {"d3"}
+    assert dbstore.count_audit_log(changes_contains="DEBUG") == 1
+    assert dbstore.count_audit_log(changes_contains="no-such-value") == 0
+
+
+def test_audit_changes_contains_escapes_like_wildcards(tmp_path):
+    """A search for "%" must not silently match every row."""
+    _seed_change_rows(tmp_path)
+    total = dbstore.count_audit_log()
+    assert total == 4
+
+    assert dbstore.count_audit_log(changes_contains="%") == 0
+    assert dbstore.count_audit_log(changes_contains="_") < total
+
+
+def test_audit_change_filters_combine_with_the_others(tmp_path):
+    """New filters must AND with the existing ones, and count must agree with
+    the page it describes."""
+    _seed_change_rows(tmp_path)
+
+    assert dbstore.count_audit_log(changed_field="os", action="created") == 1
+    assert dbstore.count_audit_log(changed_field="os", action="updated") == 1
+    assert dbstore.count_audit_log(changed_field="os", entity_type="setting") == 0
+    assert dbstore.count_audit_log(changed_field="os", changes_contains="windows") == 1
+
+    rows = dbstore.list_audit_log(changed_field="os", changes_contains="linux")
+    assert dbstore.count_audit_log(changed_field="os", changes_contains="linux") == len(rows)

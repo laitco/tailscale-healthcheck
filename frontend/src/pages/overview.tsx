@@ -3,13 +3,16 @@ import { Link } from 'react-router-dom'
 import { MetricCard } from '@/components/metric-card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
-import { useHealthContext } from '@/lib/health-context'
-import { fetchMetricsHistory, fetchSettings, type MetricsHistoryEntry } from '@/lib/admin-api'
+import { useHealthContext, useTimezone } from '@/lib/health-context'
+import { fetchMetricsHistory, type MetricsHistoryEntry } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
 
 export default function OverviewPage() {
   const { health, keys, loading, error, loadedAt } = useHealthContext()
   const [history, setHistory] = useState<MetricsHistoryEntry[]>([])
-  const [timezone, setTimezone] = useState<string | undefined>(undefined)
+  // Comes straight off /health's poll_meta now - this page used to fetch the
+  // entire (admin-only) /admin/api/settings payload just to read one string.
+  const timezone = useTimezone()
 
   // Trend sparklines are a bonus on top of the live counts above them - fetch the
   // last 24h of poller history once on mount and again whenever the health data
@@ -28,23 +31,6 @@ export default function OverviewPage() {
     }
   }, [loadedAt])
 
-  // Fetch the configured timezone once so trend chart axis labels can be rendered
-  // in local (tailnet-configured) time rather than the viewer's browser timezone.
-  useEffect(() => {
-    let cancelled = false
-    fetchSettings()
-      .then((res) => {
-        const tz = res.timezone?.value
-        if (!cancelled && typeof tz === 'string' && tz) setTimezone(tz)
-      })
-      .catch(() => {
-        // best-effort only; falls back to browser timezone
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   if (loading && !health) {
     return (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -57,9 +43,9 @@ export default function OverviewPage() {
 
   if (error && !health) {
     return (
-      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+      <Alert>
         Failed to load overview: {error}
-      </div>
+      </Alert>
     )
   }
 
@@ -73,7 +59,7 @@ export default function OverviewPage() {
   return (
     <div className="space-y-6">
       {pollMeta?.last_poll_auth_error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+        <Alert className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="font-medium">Unable to reach the Tailscale API</p>
             <p className="text-xs text-destructive/90">
@@ -84,10 +70,10 @@ export default function OverviewPage() {
           <Button asChild variant="outline" size="sm">
             <Link to="/admin/settings">Check credentials</Link>
           </Button>
-        </div>
+        </Alert>
       )}
       {!pollMeta?.last_poll_auth_error && pollMeta?.last_poll_ok === false && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+        <Alert className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="font-medium">Unable to reach the Tailscale API</p>
             <p className="text-xs text-destructive/90">
@@ -98,7 +84,7 @@ export default function OverviewPage() {
           <Button asChild variant="outline" size="sm">
             <Link to="/admin/settings">Review settings</Link>
           </Button>
-        </div>
+        </Alert>
       )}
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">

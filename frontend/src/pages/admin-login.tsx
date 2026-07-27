@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { AdminAuthLayout } from '@/components/admin-auth-layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { login, loginMfa, AdminApiError } from '@/lib/admin-api'
+import { login, loginMfa, errorMessage } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
 
 export default function AdminLoginPage() {
   const navigate = useNavigate()
@@ -27,7 +28,7 @@ export default function AdminLoginPage() {
         navigate('/dashboard')
       }
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Login failed')
+      setError(errorMessage(err, 'Login failed'))
     } finally {
       setSubmitting(false)
     }
@@ -41,7 +42,7 @@ export default function AdminLoginPage() {
       await loginMfa(useRecoveryCode ? { recovery_code: code } : { code })
       navigate('/dashboard')
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Verification failed')
+      setError(errorMessage(err, 'Verification failed'))
     } finally {
       setSubmitting(false)
     }
@@ -55,9 +56,9 @@ export default function AdminLoginPage() {
       >
         <form className="space-y-3" onSubmit={onSubmitMfa}>
           {error && (
-            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+            <Alert className="p-2 text-xs">
               {error}
-            </div>
+            </Alert>
           )}
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground" htmlFor="mfa-code">
@@ -97,9 +98,9 @@ export default function AdminLoginPage() {
     <AdminAuthLayout title="Sign in" description="Sign in to access the dashboard and admin settings.">
       <form className="space-y-3" onSubmit={onSubmit}>
         {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          <Alert className="p-2 text-xs">
             {error}
-          </div>
+          </Alert>
         )}
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted-foreground" htmlFor="username">

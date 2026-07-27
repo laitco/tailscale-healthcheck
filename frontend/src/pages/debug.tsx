@@ -5,7 +5,10 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { fetchPollerLog, type PollerLogEntry } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
+import { fetchPollerLog, errorMessage, type PollerLogEntry } from '@/lib/admin-api'
+import { formatDateTime, formatTime } from '@/lib/format'
+import { useTimezone } from '@/lib/health-context'
 
 const FETCH_LIMIT = 300
 
@@ -29,6 +32,8 @@ export default function DebugPage() {
   const [selected, setSelected] = useState<Set<string> | null>(null) // null = all selected
   const [meta, setMeta] = useState<{ enabled: boolean; last_polled_at: string | null; poll_interval_seconds: number } | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const timezone = useTimezone()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -37,6 +42,13 @@ export default function DebugPage() {
       setEntries(data.entries) // already newest-first
       setEventTypes(data.event_types)
       setMeta({ enabled: data.enabled, last_polled_at: data.last_polled_at, poll_interval_seconds: data.poll_interval_seconds })
+      setLoadError(null)
+    } catch (err) {
+      // try/finally with no catch meant a failed fetch (or the 15s auto-refresh
+      // hitting a dead backend) threw an unhandled rejection and left the page
+      // on its skeleton with nothing to explain why.
+      setEntries((prev) => prev ?? [])
+      setLoadError(errorMessage(err, 'Failed to load the poller log'))
     } finally {
       setLoading(false)
     }
@@ -85,9 +97,22 @@ export default function DebugPage() {
             {eventTypes.map((t) => (
               <Badge
                 key={t}
+                role="checkbox"
+                tabIndex={0}
+                aria-checked={isTypeShown(t)}
+                aria-label={`Show ${t} events`}
                 variant={isTypeShown(t) ? eventBadgeVariant(t) : 'ghost'}
-                className={cn('cursor-pointer select-none', !isTypeShown(t) && 'opacity-40')}
+                className={cn(
+                  'cursor-pointer select-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none',
+                  !isTypeShown(t) && 'opacity-40',
+                )}
                 onClick={() => toggleType(t)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault() // Space would otherwise scroll the page
+                    toggleType(t)
+                  }
+                }}
               >
                 {t}
               </Badge>
@@ -106,11 +131,23 @@ export default function DebugPage() {
           {meta && (
             <span className="mt-2 block text-xs text-muted-foreground">
               Poll interval: {meta.poll_interval_seconds}s
-              {meta.last_polled_at ? ` · Last polled: ${new Date(meta.last_polled_at).toLocaleString()}` : ''}
+              {meta.last_polled_at ? ` · Last polled: ${formatDateTime(meta.last_polled_at, timezone)}` : ''}
             </span>
           )}
         </CardContent>
       </Card>
+
+      {loadError && <Alert>{loadError}</Alert>}
+
+      {filteredEntries && (
+        <p className="text-xs text-muted-foreground">
+          Showing {filteredEntries.length}
+          {entries && entries.length >= FETCH_LIMIT
+            ? ` of the most recent ${FETCH_LIMIT} events (older entries are not loaded)`
+            : ' events'}
+          .
+        </p>
+      )}
 
       {!filteredEntries ? (
         <Skeleton className="h-96" />
@@ -126,7 +163,7 @@ export default function DebugPage() {
                 className="flex flex-wrap items-start gap-2 rounded-md px-2 py-1.5 text-xs/relaxed ring-1 ring-foreground/10"
               >
                 <span className="whitespace-nowrap font-mono text-muted-foreground">
-                  {new Date(entry.occurred_at).toLocaleTimeString()}
+                  {formatTime(entry.occurred_at, timezone)}
                 </span>
                 <Badge variant={eventBadgeVariant(entry.event_type)}>{entry.event_type}</Badge>
                 <span className="flex-1">{entry.message}</span>

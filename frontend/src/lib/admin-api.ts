@@ -132,13 +132,15 @@ export function deleteUser(username: string): Promise<{ ok: boolean }> {
 
 export function fetchAuditLog(
   params: Record<string, string> & { actor?: string },
-): Promise<{ entries: AuditEntry[] }> {
+): Promise<{ entries: AuditEntry[]; total: number; limit: number; offset: number }> {
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v))).toString()
   return request(`/admin/api/audit${qs ? `?${qs}` : ''}`)
 }
 
 export type AuditFiltersResponse = {
   actors: string[]
+  /** Field names present in changes blobs, for the "Changed field" filter. */
+  changed_fields: string[]
   entity_ids: { entity_type: string; entity_id: string; name: string }[]
   entity_types: string[]
   actions: string[]
@@ -215,3 +217,14 @@ export function disableMfa(code: string): Promise<{ ok: boolean }> {
 }
 
 export { AdminApiError }
+
+/**
+ * Message from a thrown value, falling back when it isn't an Error at all.
+ * Replaces the `err instanceof AdminApiError ? err.message : '…'` ternary that
+ * was repeated in every page's catch block - and also covers ApiError from
+ * lib/api.ts and plain Errors, which that narrower check silently swallowed
+ * into the generic fallback.
+ */
+export function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}

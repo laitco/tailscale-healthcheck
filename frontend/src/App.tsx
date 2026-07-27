@@ -16,11 +16,14 @@ import AdminAuditPage from '@/pages/admin-audit'
 import ApiDocsPage from '@/pages/api-docs'
 import { useSystemTheme } from '@/lib/use-system-theme'
 import { HealthProvider } from '@/lib/health-context'
+import { ErrorBoundary } from '@/components/error-boundary'
+import { ToastProvider } from '@/lib/toast'
 
 export default function App() {
   useSystemTheme()
   return (
     <TooltipProvider>
+      <ToastProvider>
       <Routes>
         {/* Standalone, unauthenticated shell - no sidebar, no /health fetch */}
         <Route path="/admin/setup" element={<AdminSetupPage />} />
@@ -32,6 +35,9 @@ export default function App() {
           element={
             <HealthProvider>
               <Layout>
+                {/* Inside Layout so a crashing page keeps the sidebar and the
+                    user can navigate away instead of hitting a blank app. */}
+                <ErrorBoundary>
                 <Routes>
                   <Route path="/" element={<OverviewPage />} />
                   <Route path="/dashboard" element={<OverviewPage />} />
@@ -46,11 +52,13 @@ export default function App() {
                   <Route path="/admin/api-docs" element={<ApiDocsPage />} />
                   <Route path="*" element={<NotFoundPage />} />
                 </Routes>
+                </ErrorBoundary>
               </Layout>
             </HealthProvider>
           }
         />
       </Routes>
+      </ToastProvider>
     </TooltipProvider>
   )
 }

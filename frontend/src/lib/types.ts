@@ -67,6 +67,8 @@ export interface PollMeta {
   last_poll_ok?: boolean | null
   last_poll_error?: string | null
   last_poll_auth_error?: boolean
+  /** Configured IANA timezone - render every timestamp in this, not the browser's. */
+  timezone?: string
 }
 
 export interface HealthResponse {

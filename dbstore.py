@@ -101,6 +101,28 @@ SETTINGS_REGISTRY = {
     # standard `logging` module either way.
     "debug_log_enabled": ("DEBUG_LOG_ENABLED", "bool", True, None, "logging"),
 
+    # Security - all take effect on next process restart only (the WSGI
+    # middleware stack and Flask's session config are built once at startup).
+    #
+    # Number of reverse proxies in front of this app. 0 (the default) leaves
+    # request.remote_addr untouched; any higher value wraps the app in
+    # werkzeug's ProxyFix so remote_addr comes from X-Forwarded-For instead.
+    # This matters a lot: remote_addr drives both rate limiters AND the failed
+    # login lockout, so behind an un-declared proxy every client collapses to
+    # the proxy's IP - one attacker's failed logins lock out every user, and
+    # the per-IP request limit silently becomes a global one. Only set this to
+    # the number of proxies you actually control; a client can forge
+    # X-Forwarded-For entries beyond that count.
+    "trusted_proxy_count": ("TRUSTED_PROXY_COUNT", "int", 0, None, "security"),
+    # Set to true when serving over HTTPS so the session cookie carries the
+    # Secure flag. Defaults to false, since a plain-HTTP LAN/local deployment
+    # would otherwise be unable to log in at all (the browser would refuse to
+    # send the cookie back).
+    "session_cookie_secure": ("SESSION_COOKIE_SECURE", "bool", False, None, "security"),
+    # How long an admin session stays valid. Default is deliberately long so
+    # upgrading doesn't sign everyone out; lower it if sessions should expire.
+    "session_lifetime_minutes": ("SESSION_LIFETIME_MINUTES", "int", 43200, None, "security"),
+
     # Rate limiting - takes effect on next process restart only (Flask-Limiter
     # and the @_apply_limits decorators are wired up once at route-definition
     # time, not per-request).
@@ -144,6 +166,11 @@ SETTINGS_REGISTRY = {
     # global_healthy_restored/poll_auth_error aren't device-scoped.
     "notify_include_tags": ("NOTIFY_INCLUDE_TAGS", "str", "", None, "notifications"),
     "notify_exclude_tags": ("NOTIFY_EXCLUDE_TAGS", "str", "", None, "notifications"),
+    # Minimum minutes between two notifications for the same (event, entity)
+    # pair. Notifications already only fire on a *transition*, but a device
+    # flapping across the healthy line still produces one alert per flap.
+    # 0 (the default) keeps the previous behavior: every transition notifies.
+    "notification_cooldown_minutes": ("NOTIFICATION_COOLDOWN_MINUTES", "int", 0, None, "notifications"),
 }
 
 # Device/key fields that trigger an audit_log row when changed. `last_seen`
@@ -311,6 +338,13 @@ def init_db():
                 actor TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_log(occurred_at);
+            -- list_audit_log()/count_audit_log() filter on these columns and
+            -- always order by occurred_at DESC; without a composite index every
+            -- filtered page (and its COUNT) was a full scan of a table that
+            -- grows at poll frequency.
+            CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor, occurred_at);
 
             CREATE TABLE IF NOT EXISTS metrics_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -369,6 +403,19 @@ def init_db():
                 healthy INTEGER NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (entity_type, entity_id)
+            );
+
+            -- When each (event_type, entity_id) pair last actually notified,
+            -- so notification_cooldown_minutes can suppress a device that
+            -- flaps across the healthy/unhealthy line repeatedly. Separate
+            -- from entity_health_state because the key is the event, not the
+            -- entity: one device has independent cooldowns for
+            -- device_unhealthy and device_needs_signing.
+            CREATE TABLE IF NOT EXISTS notification_state (
+                event_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                last_notified_at TEXT NOT NULL,
+                PRIMARY KEY (event_type, entity_id)
             );
             """
         )
@@ -620,6 +667,40 @@ def get_setting_meta(name: str):
         return {"value": None, "source": None}
 
 
+def get_settings_meta(names) -> dict:
+    """get_setting_meta() for many settings in a single DB round trip.
+
+    The settings page asks for all ~57 registry entries at once; doing it one
+    at a time meant one fresh connection (plus three PRAGMAs) per setting, and
+    another per get_settings_typed() call alongside it - well over a hundred
+    connections to render one page.
+    """
+    names = list(names)
+    result = {}
+    need_db = []
+    for name in names:
+        env_value = _env_override_value(name)
+        if env_value is not None:
+            result[name] = {"value": env_value, "source": "env"}
+        else:
+            need_db.append(name)
+    if need_db:
+        placeholders = ",".join("?" for _ in need_db)
+        with get_connection() as conn:
+            rows = {
+                r["name"]: r
+                for r in conn.execute(
+                    f"SELECT name, value, source FROM settings WHERE name IN ({placeholders})", need_db
+                )
+            }
+        for name in need_db:
+            row = rows.get(name)
+            result[name] = (
+                {"value": row["value"], "source": row["source"]} if row else {"value": None, "source": None}
+            )
+    return result
+
+
 def is_tailnet_configured() -> bool:
     value = get_setting("tailnet_domain")
     return bool(value) and value.strip().lower() != "example.com"
@@ -816,6 +897,11 @@ def list_users():
         return [dict(r) for r in rows]
 
 
+# Computed once at import: a hash of a random throwaway secret, used purely to
+# burn the same time as a real comparison when the username doesn't exist.
+_DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_urlsafe(32))
+
+
 def verify_password(username: str, password: str):
     """Check credentials only - does NOT record last_login_at, since a user
     with MFA enabled isn't actually logged in until the TOTP/recovery step
@@ -823,6 +909,11 @@ def verify_password(username: str, password: str):
     established (see admin.py's login routes)."""
     user = get_user_by_username(username)
     if not user:
+        # Hash against a throwaway digest anyway, so an unknown username costs
+        # the same wall-clock time as a known one with a wrong password.
+        # Returning early here made the two distinguishable by timing, which
+        # is a username-enumeration oracle on an otherwise uniform 401.
+        check_password_hash(_DUMMY_PASSWORD_HASH, password)
         return None
     if not check_password_hash(user["password_hash"], password):
         return None
@@ -857,6 +948,20 @@ def check_login_rate_limit(
             return False
         conn.execute("UPDATE login_rate_limit SET count = count + 1 WHERE ip = ?", (ip,))
         return True
+
+
+def purge_login_rate_limit(window_seconds: int = LOGIN_RATE_LIMIT_WINDOW_SECONDS):
+    """Drop counter rows whose window has long since closed.
+
+    Unlike audit_log/poller_log/metrics_history this table had no purge at
+    all, so it accumulated one permanent row per distinct source IP that ever
+    attempted a login - unbounded growth on any internet-facing instance.
+    Rows outside the current window carry no information: check_login_rate_limit()
+    resets the count as soon as it sees a stale window_start.
+    """
+    cutoff = int(time.time()) - (window_seconds * 2)
+    with get_connection() as conn:
+        conn.execute("DELETE FROM login_rate_limit WHERE window_start < ?", (cutoff,))
 
 
 def touch_last_login(user_id: int):
@@ -1198,24 +1303,18 @@ def _existing_key_field(row, field):
 # Audit log
 # ---------------------------------------------------------------------------
 
-def list_audit_log(
-    limit: int = 100,
-    offset: int = 0,
-    entity_type: str = None,
-    entity_id: str = None,
-    action: str = None,
-    actor: str = None,
-    start: str = None,
-    end: str = None,
-):
-    """List audit_log rows, most recent first, filters combined with AND.
+# Wrapper keys used by a "setting" row's changes blob ({"old","new","source"}),
+# as opposed to a device/key row where the top-level keys ARE the changed field
+# names. Excluded from the changed-field filter so the dropdown lists real
+# fields; a setting's "field" is its entity_id, which is already filterable.
+_AUDIT_CHANGE_META_KEYS = ("old", "new", "source")
 
-    `start`/`end` are ISO8601 timestamps (inclusive) filtering occurred_at.
-    `actor` matches the exact username, except the special value "poller"
-    which matches automatic (actor IS NULL) changes - the poller doesn't
-    write an actor of its own, so this is the only way to filter to/from it.
-    """
-    query = "SELECT * FROM audit_log"
+
+def _audit_log_filter_sql(
+    entity_type, entity_id, action, actor, start, end, changed_field=None, changes_contains=None,
+):
+    """Build the shared WHERE clause for the audit log, so listing and
+    counting can never drift apart and disagree about the total."""
     clauses = []
     params = []
     if entity_type:
@@ -1239,12 +1338,89 @@ def list_audit_log(
     if end:
         clauses.append("occurred_at <= ?")
         params.append(end)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    if changed_field:
+        # Top-level keys of the changes JSON are the changed field names for
+        # device/key/user rows (both the {field: {old,new}} update shape and
+        # the {field: value} created/removed snapshot shape).
+        #
+        # The meta wrapper keys are excluded here as well as from
+        # list_audit_log_changed_fields(), so the filter can only match values
+        # the select actually offers - otherwise a hand-edited
+        # ?changed_field=source in the URL would quietly return every setting
+        # row, which is not a "field" match in any sense a user would mean.
+        if changed_field in _AUDIT_CHANGE_META_KEYS:
+            clauses.append("0")
+        else:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(audit_log.changes) WHERE json_each.key = ?)"
+            )
+            params.append(changed_field)
+    if changes_contains:
+        # Substring match over the raw JSON, so a hostname, version string, or
+        # an old/new value all find their rows. LIKE is ASCII-case-insensitive
+        # in SQLite, which is what a search box should do.
+        clauses.append("changes LIKE ? ESCAPE '\\'")
+        params.append(f"%{_escape_like(changes_contains)}%")
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _escape_like(value: str) -> str:
+    """Neutralize LIKE wildcards in user input so searching for "100%" doesn't
+    silently match everything."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def count_audit_log(
+    entity_type: str = None,
+    entity_id: str = None,
+    action: str = None,
+    actor: str = None,
+    start: str = None,
+    end: str = None,
+    changed_field: str = None,
+    changes_contains: str = None,
+) -> int:
+    """Total matching rows, ignoring limit/offset - what the UI needs to show
+    "showing 1-100 of 4,213" and render real pagination controls."""
+    where, params = _audit_log_filter_sql(
+        entity_type, entity_id, action, actor, start, end, changed_field, changes_contains,
+    )
+    with get_connection() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM audit_log" + where, params).fetchone()["n"]
+
+
+def list_audit_log(
+    limit: int = 100,
+    offset: int = 0,
+    entity_type: str = None,
+    entity_id: str = None,
+    action: str = None,
+    actor: str = None,
+    start: str = None,
+    end: str = None,
+    changed_field: str = None,
+    changes_contains: str = None,
+):
+    """List audit_log rows, most recent first, filters combined with AND.
+
+    `start`/`end` are ISO8601 timestamps (inclusive) filtering occurred_at.
+    `actor` matches the exact username, except the special value "poller"
+    which matches automatic (actor IS NULL) changes - the poller doesn't
+    write an actor of its own, so this is the only way to filter to/from it.
+    `changed_field` keeps only rows whose changes blob touches that field
+    (e.g. "os", "update_available"); `changes_contains` is a free-text
+    substring match over the changes JSON, matching values as well as field
+    names - together they're what makes the changes column diggable rather
+    than just readable.
+    """
+    where, params = _audit_log_filter_sql(
+        entity_type, entity_id, action, actor, start, end, changed_field, changes_contains,
+    )
+    query = "SELECT * FROM audit_log" + where + " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?"
+    params = [*params, limit, offset]
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
+        names = _load_entity_names(conn)
         result = []
         for r in rows:
             entry = dict(r)
@@ -1252,32 +1428,42 @@ def list_audit_log(
                 entry["changes"] = json.loads(entry["changes"])
             except (TypeError, ValueError):
                 pass
-            entry["entity_name"] = _resolve_entity_name(conn, entry["entity_type"], entry["entity_id"], entry["changes"])
+            entry["entity_name"] = _resolve_entity_name(names, entry["entity_type"], entry["entity_id"], entry["changes"])
             result.append(entry)
         return result
 
 
-def _resolve_entity_name(conn, entity_type: str, entity_id: str, changes):
+def _load_entity_names(conn) -> dict:
+    """Preload every device/key display name as {(entity_type, id): name}.
+
+    Two queries total, replacing the one-SELECT-per-row lookup
+    _resolve_entity_name() used to do - a 500-row audit page issued 500 extra
+    queries. Both tables are bounded by tailnet size, so loading them whole is
+    cheaper than the per-row round trips it replaces.
+    """
+    names = {}
+    for r in conn.execute("SELECT device_id, name FROM devices"):
+        names[("device", r["device_id"])] = r["name"]
+    for r in conn.execute("SELECT key_id, description FROM tailnet_keys"):
+        names[("tailnet_key", r["key_id"])] = r["description"]
+    return names
+
+
+def _resolve_entity_name(names: dict, entity_type: str, entity_id: str, changes):
     """Human-readable label for an audit_log row's entity.
 
     Prefers the *current* devices/tailnet_keys row (covers "updated" rows,
-    where the entity still exists); falls back to whatever name/description
-    was captured in `changes` at the time (covers "removed" rows, where the
-    live row is gone - upsert_devices()/upsert_keys() always include the name
-    in a removal's changes blob for exactly this reason). Falls back to the
-    raw id if neither is available (e.g. a device that was both created and
-    removed with the name lookup failing for some other reason).
+    where the entity still exists), looked up in the `names` map from
+    _load_entity_names(); falls back to whatever name/description was captured
+    in `changes` at the time (covers "removed" rows, where the live row is gone
+    - upsert_devices()/upsert_keys() always include the name in a removal's
+    changes blob for exactly this reason). Falls back to the raw id if neither
+    is available.
     """
     if entity_type == "device":
-        row = conn.execute("SELECT name FROM devices WHERE device_id = ?", (entity_id,)).fetchone()
-        if row and row["name"]:
-            return row["name"]
-        return _name_from_changes(changes, "name") or entity_id
+        return names.get(("device", entity_id)) or _name_from_changes(changes, "name") or entity_id
     if entity_type == "tailnet_key":
-        row = conn.execute("SELECT description FROM tailnet_keys WHERE key_id = ?", (entity_id,)).fetchone()
-        if row and row["description"]:
-            return row["description"]
-        return _name_from_changes(changes, "description") or entity_id
+        return names.get(("tailnet_key", entity_id)) or _name_from_changes(changes, "description") or entity_id
     # "setting" (entity_id is the setting name) and "user" (entity_id is the
     # username) are already human-readable as-is.
     return entity_id
@@ -1319,24 +1505,55 @@ def list_audit_log_entity_ids(entity_type: str = None):
     query += " ORDER BY entity_type, entity_id"
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
+        names = _load_entity_names(conn)
+        # The most recent changes blob per entity, for the name-resolution
+        # fallback on removed entities. One grouped query instead of one per
+        # distinct entity; MAX(id) is the newest row because id is a
+        # monotonic AUTOINCREMENT, which is also the original query's
+        # tiebreaker within a single occurred_at.
+        latest_changes = {
+            (r["entity_type"], r["entity_id"]): r["changes"]
+            for r in conn.execute(
+                "SELECT entity_type, entity_id, changes FROM audit_log "
+                "WHERE id IN (SELECT MAX(id) FROM audit_log GROUP BY entity_type, entity_id)"
+            )
+        }
         result = []
         for r in rows:
-            # Use the most recent audit changes blob for this entity as the
-            # name-resolution fallback (covers removed entities).
-            latest = conn.execute(
-                "SELECT changes FROM audit_log WHERE entity_type = ? AND entity_id = ? "
-                "ORDER BY occurred_at DESC, id DESC LIMIT 1",
-                (r["entity_type"], r["entity_id"]),
-            ).fetchone()
+            raw = latest_changes.get((r["entity_type"], r["entity_id"]))
             changes = None
-            if latest and latest["changes"]:
+            if raw:
                 try:
-                    changes = json.loads(latest["changes"])
+                    changes = json.loads(raw)
                 except (TypeError, ValueError):
                     changes = None
-            name = _resolve_entity_name(conn, r["entity_type"], r["entity_id"], changes)
+            name = _resolve_entity_name(names, r["entity_type"], r["entity_id"], changes)
             result.append({"entity_type": r["entity_type"], "entity_id": r["entity_id"], "name": name})
         return result
+
+
+def list_audit_log_changed_fields(entity_type: str = None):
+    """Distinct field names appearing in audit_log changes blobs, for the
+    "changed field" filter select, optionally scoped to one entity_type.
+
+    Reads the top-level JSON keys via json_each. Rows whose changes aren't a
+    JSON object are skipped (json_each yields a NULL key for a scalar), and
+    the setting-shaped wrapper keys are excluded - see
+    _AUDIT_CHANGE_META_KEYS.
+    """
+    placeholders = ",".join("?" for _ in _AUDIT_CHANGE_META_KEYS)
+    query = (
+        "SELECT DISTINCT json_each.key AS field FROM audit_log, json_each(audit_log.changes) "
+        f"WHERE json_valid(audit_log.changes) AND json_each.key IS NOT NULL "
+        f"AND json_each.key NOT IN ({placeholders})"
+    )
+    params = list(_AUDIT_CHANGE_META_KEYS)
+    if entity_type:
+        query += " AND audit_log.entity_type = ?"
+        params.append(entity_type)
+    query += " ORDER BY field"
+    with get_connection() as conn:
+        return [r["field"] for r in conn.execute(query, params)]
 
 
 def purge_audit_log(retention_days: int = None):
@@ -1471,13 +1688,32 @@ def get_health_state(entity_type: str) -> dict:
     return {r["entity_id"]: bool(r["healthy"]) for r in rows}
 
 
+_SET_HEALTH_STATE_SQL = (
+    "INSERT INTO entity_health_state (entity_type, entity_id, healthy, updated_at) VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(entity_type, entity_id) DO UPDATE SET healthy=excluded.healthy, updated_at=excluded.updated_at"
+)
+
+
 def set_health_state(entity_type: str, entity_id: str, healthy: bool):
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO entity_health_state (entity_type, entity_id, healthy, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(entity_type, entity_id) DO UPDATE SET healthy=excluded.healthy, updated_at=excluded.updated_at",
-            (entity_type, entity_id, int(healthy), _now_iso()),
-        )
+        conn.execute(_SET_HEALTH_STATE_SQL, (entity_type, entity_id, int(healthy), _now_iso()))
+
+
+def set_health_state_bulk(entity_type: str, states: dict):
+    """Write every entity_id -> healthy pair in one transaction.
+
+    get_connection() opens a fresh connection and re-issues three PRAGMAs per
+    call, so calling set_health_state() once per device inside the poller loop
+    cost one connection + one commit (and one fsync) per device per cycle, on
+    the same WAL writer four Gunicorn workers contend for. This collapses that
+    to one.
+    """
+    if not states:
+        return
+    now = _now_iso()
+    rows = [(entity_type, entity_id, int(bool(healthy)), now) for entity_id, healthy in states.items()]
+    with get_connection() as conn:
+        conn.executemany(_SET_HEALTH_STATE_SQL, rows)
 
 
 def prune_health_state(entity_type: str, keep_ids):
@@ -1493,3 +1729,36 @@ def prune_health_state(entity_type: str, keep_ids):
             f"DELETE FROM entity_health_state WHERE entity_type = ? AND entity_id NOT IN ({placeholders})",
             (entity_type, *keep_ids),
         )
+
+
+# ---------------------------------------------------------------------------
+# Notification cooldown state (last delivery per event/entity, for poller.py)
+# ---------------------------------------------------------------------------
+
+def get_last_notified(event_type: str) -> dict:
+    """Map of entity_id -> last delivery timestamp (ISO string) for
+    `event_type`. One query per event type, not per entity."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT entity_id, last_notified_at FROM notification_state WHERE event_type = ?", (event_type,),
+        ).fetchall()
+    return {r["entity_id"]: r["last_notified_at"] for r in rows}
+
+
+def set_last_notified(event_type: str, entity_id: str, when: str = None):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO notification_state (event_type, entity_id, last_notified_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(event_type, entity_id) DO UPDATE SET last_notified_at=excluded.last_notified_at",
+            (event_type, entity_id, when or _now_iso()),
+        )
+
+
+def purge_notification_state(older_than_days: int = 30):
+    """Drop cooldown rows far older than any plausible cooldown window, so a
+    long-lived install doesn't accumulate a row per device that ever
+    notified. Unlike the audit/poller logs this is pure bookkeeping - nothing
+    reads a row older than notification_cooldown_minutes."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, older_than_days))).isoformat()
+    with get_connection() as conn:
+        conn.execute("DELETE FROM notification_state WHERE last_notified_at < ?", (cutoff,))

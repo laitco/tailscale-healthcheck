@@ -15,6 +15,7 @@ notification_events, keeping this fully inert by default. test() bypasses
 the event/tag gating for the settings page's "Send test notification" button.
 """
 import fnmatch
+import re
 
 import requests
 
@@ -34,7 +35,7 @@ EVENT_TYPES = (
 
 NOTIFICATION_SETTINGS = (
     "apprise_api_url", "apprise_notification_urls", "apprise_bearer_token", "notification_events",
-    "notify_include_tags", "notify_exclude_tags",
+    "notify_include_tags", "notify_exclude_tags", "notification_cooldown_minutes",
 )
 
 
@@ -77,6 +78,35 @@ def is_lock_signer(device_tags, lock_signer_tags_csv: str) -> bool:
     return any(any(fnmatch.fnmatch(tag, pattern) for pattern in patterns) for tag in stripped_tags)
 
 
+# scheme://user:pass@host - the userinfo half of any URL in an error message.
+_URL_USERINFO_RE = re.compile(r"(\w+://)[^/\s:@]+:[^/\s@]+@")
+
+
+def sanitize_error(exc: Exception, cfg: dict) -> str:
+    """Render `exc` as a log-safe string.
+
+    Failure reasons from here are persisted to dbstore.poller_log and shown on
+    the /debug page and the settings page, so they must not carry credentials.
+    `requests` embeds the request URL in its exception messages, and both
+    apprise_api_url and the configured service URLs can contain inline
+    credentials (mailto://user:pass@host). Host/status detail is kept - it's
+    what makes the log actionable - but userinfo and any configured secret
+    value are replaced with ***.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    response = getattr(exc, "response", None)
+    if response is not None:
+        text = f"{type(exc).__name__}: HTTP {response.status_code}"
+    text = _URL_USERINFO_RE.sub(r"\1***@", text)
+    secrets_to_mask = [cfg.get("apprise_bearer_token", "")]
+    secrets_to_mask += (cfg.get("apprise_notification_urls", "") or "").split(",")
+    for secret in secrets_to_mask:
+        secret = (secret or "").strip()
+        if len(secret) > 3:
+            text = text.replace(secret, "***")
+    return text
+
+
 def _send(cfg: dict, title: str, body: str):
     url = f"{cfg['apprise_api_url'].rstrip('/')}/notify"
     headers = {}
@@ -91,8 +121,8 @@ def _send(cfg: dict, title: str, body: str):
 def notify(event_type: str, title: str, body: str, cfg: dict, device_tags=None):
     """Send a notification for `event_type` if configured, enabled, and (for
     device-scoped events) tag-filter-matched. Returns (sent, reason) where
-    `reason` explains a skip, or the exception message on a send failure -
-    never raises, so a bad Apprise endpoint can't break polling."""
+    `reason` explains a skip, or a sanitize_error()'d failure reason on a send
+    failure - never raises, so a bad Apprise endpoint can't break polling."""
     if not is_configured(cfg):
         return False, "not_configured"
     if event_type not in get_enabled_events(cfg.get("notification_events", "")):
@@ -103,7 +133,7 @@ def notify(event_type: str, title: str, body: str, cfg: dict, device_tags=None):
         _send(cfg, title, body)
         return True, None
     except Exception as e:
-        return False, str(e)
+        return False, sanitize_error(e, cfg)
 
 
 def test(cfg: dict):
@@ -116,4 +146,4 @@ def test(cfg: dict):
         _send(cfg, "Tailscale Healthcheck test notification", "If you can see this, your Apprise setup works.")
         return True, None
     except Exception as e:
-        return False, str(e)
+        return False, sanitize_error(e, cfg)

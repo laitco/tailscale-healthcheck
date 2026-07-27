@@ -48,29 +48,34 @@ export function formatVersion(ver?: string | null): string {
   return `${m[1]}.${m[2]}.${m[3]}${m[4] ? '-' + m[4] : ''}`
 }
 
-export function toCsv(items: Record<string, unknown>[]): string {
+const DEVICE_CSV_COLUMNS = [
+  'machineName',
+  'os',
+  'clientVersion',
+  'lastSeen',
+  'updateAvailable',
+  'update_healthy',
+  'keyExpiryDisabled',
+  'key_healthy',
+  'key_days_to_expire',
+  'healthy',
+  'tags',
+]
+
+/**
+ * Serialize rows to CSV. Array-valued cells (e.g. tags) are joined with "|"
+ * so they survive a single cell.
+ *
+ * Takes explicit `cols` so the keys page can share this instead of keeping its
+ * own copy - there used to be two near-identical serializers with duplicate
+ * quote-escaping logic.
+ */
+export function toCsv(items: Record<string, unknown>[], cols: string[] = DEVICE_CSV_COLUMNS): string {
   if (!items.length) return ''
-  const cols = [
-    'machineName',
-    'os',
-    'clientVersion',
-    'lastSeen',
-    'updateAvailable',
-    'update_healthy',
-    'keyExpiryDisabled',
-    'key_healthy',
-    'key_days_to_expire',
-    'healthy',
-    'tags',
-  ]
   const esc = (v: unknown) => '"' + String(v ?? '').replaceAll('"', '""') + '"'
   const lines = [cols.join(',')]
   for (const it of items) {
-    lines.push(
-      cols
-        .map((c) => (c === 'tags' ? esc(((it[c] as string[]) || []).join('|')) : esc(it[c])))
-        .join(','),
-    )
+    lines.push(cols.map((c) => esc(Array.isArray(it[c]) ? (it[c] as unknown[]).join('|') : it[c])).join(','))
   }
   return lines.join('\n')
 }
@@ -82,4 +87,36 @@ export function downloadBlob(content: string, filename: string, type: string) {
   a.download = filename
   a.click()
   URL.revokeObjectURL(a.href)
+}
+
+/**
+ * Format an ISO timestamp in the tailnet's configured timezone (from
+ * /health's poll_meta), not the viewer's browser timezone.
+ *
+ * Timestamps across the admin pages used bare toLocaleString(), so an admin in
+ * a different timezone from the one configured for the app read every audit
+ * entry, poller log line and login time shifted by their local offset.
+ */
+export function formatDateTime(iso?: string | null, timezone?: string): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  try {
+    return date.toLocaleString(undefined, timezone ? { timeZone: timezone } : undefined)
+  } catch {
+    // An unknown/invalid IANA zone must not blank out the timestamp entirely.
+    return date.toLocaleString()
+  }
+}
+
+/** Time-only variant of formatDateTime(), for dense logs where the date is implied. */
+export function formatTime(iso?: string | null, timezone?: string): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  try {
+    return date.toLocaleTimeString(undefined, timezone ? { timeZone: timezone } : undefined)
+  } catch {
+    return date.toLocaleTimeString()
+  }
 }

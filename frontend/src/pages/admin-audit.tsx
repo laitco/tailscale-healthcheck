@@ -6,10 +6,23 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
-import { fetchAuditLog, fetchAuditFilters, type AuditEntry, type AuditFiltersResponse } from '@/lib/admin-api'
-import { relativeTime } from '@/lib/format'
+import { Alert } from '@/components/ui/alert'
+import {
+  fetchAuditLog,
+  fetchAuditFilters,
+  errorMessage,
+  type AuditEntry,
+  type AuditFiltersResponse,
+} from '@/lib/admin-api'
+import { relativeTime, formatDateTime } from '@/lib/format'
+import { useTimezone } from '@/lib/health-context'
+import { useUrlState } from '@/lib/use-url-state'
+import { useDebounced } from '@/lib/use-debounced'
+import { Pagination } from '@/components/pagination'
 
 const ALL = '__all__'
+
+const PAGE_SIZE = 100
 
 const TIME_PRESETS = [
   { value: '24h', label: 'Last 24 hours', hours: 24 },
@@ -18,7 +31,6 @@ const TIME_PRESETS = [
   { value: 'all', label: 'All time', hours: null },
   { value: 'custom', label: 'Custom range…', hours: undefined },
 ] as const
-type TimePreset = (typeof TIME_PRESETS)[number]['value']
 
 function renderFieldName(field: string): string {
   const spaced = field.replace(/_/g, ' ')
@@ -155,25 +167,39 @@ function ChangesCell({ entry }: { entry: AuditEntry }) {
 export default function AdminAuditPage() {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null)
   const [filters, setFilters] = useState<AuditFiltersResponse | null>(null)
-  const [entityType, setEntityType] = useState(ALL)
-  const [action, setAction] = useState(ALL)
-  const [entityId, setEntityId] = useState(ALL)
-  const [actor, setActor] = useState(ALL)
+  // Filters live in the query string, so a dug-out view ("everything where os
+  // changed, mentioning ReverseProxy") is a shareable link and survives reload.
+  const [entityType, setEntityType] = useUrlState('entity_type', ALL)
+  const [action, setAction] = useUrlState('action', ALL)
+  const [entityId, setEntityId] = useUrlState('entity_id', ALL)
+  const [actor, setActor] = useUrlState('actor', ALL)
+  const [changedField, setChangedField] = useUrlState('changed_field', ALL)
+  const [changesQuery, setChangesQuery] = useUrlState('changes', '')
   // Defaults to "Last 24 hours" so a restart or long-lived deployment doesn't
   // dump an undifferentiated wall of history where old entries (e.g. the
   // one-time setup wizard's "created" rows) read as if they just happened.
-  const [timePreset, setTimePreset] = useState<TimePreset>('24h')
-  const [start, setStart] = useState('')
-  const [end, setEnd] = useState('')
+  const [timePreset, setTimePreset] = useUrlState('when', '24h')
+  const [start, setStart] = useUrlState('from', '')
+  const [end, setEnd] = useUrlState('to', '')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [total, setTotal] = useState(0)
+  const [offset, setOffset] = useState(0)
+  const debouncedChanges = useDebounced(changesQuery.trim())
+  const timezone = useTimezone()
 
   // Full filter option set for entity_type/action/actor; entity_id options narrow to
   // the currently-selected entity_type via a refetch (per the backend contract).
   useEffect(() => {
-    fetchAuditFilters(entityType === ALL ? undefined : entityType).then(setFilters)
+    fetchAuditFilters(entityType === ALL ? undefined : entityType)
+      .then(setFilters)
+      // Filter options are a convenience; failing to load them must not take
+      // the page down - the log itself still renders unfiltered.
+      .catch(() => setFilters(null))
   }, [entityType])
 
   function load() {
     setEntries(null)
+    setLoadError(null)
     const preset = TIME_PRESETS.find((p) => p.value === timePreset)
     const presetStart = preset?.hours ? new Date(Date.now() - preset.hours * 3600_000).toISOString() : ''
     const effectiveStart = timePreset === 'custom' ? (start ? new Date(start).toISOString() : '') : presetStart
@@ -185,11 +211,30 @@ export default function AdminAuditPage() {
       actor: actor === ALL ? '' : actor,
       start: effectiveStart,
       end: effectiveEnd,
-      limit: '200',
-    }).then((data) => setEntries(data.entries))
+      changed_field: changedField === ALL ? '' : changedField,
+      changes_contains: debouncedChanges,
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+    })
+      .then((data) => {
+        setEntries(data.entries)
+        setTotal(data.total)
+      })
+      // entries===null is also the loading state, so without this an error
+      // was indistinguishable from "still loading" and the skeleton stayed up.
+      .catch((err) => {
+        setEntries([])
+        setLoadError(errorMessage(err, 'Failed to load the audit log'))
+      })
   }
 
-  useEffect(load, [entityType, action, entityId, actor, timePreset]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(load, [entityType, action, entityId, actor, changedField, debouncedChanges, timePreset, start, end, offset]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Any filter change invalidates the current page - staying on offset 400
+  // after narrowing to 12 results would show an empty table.
+  useEffect(() => {
+    setOffset(0)
+  }, [entityType, action, entityId, actor, changedField, debouncedChanges, timePreset, start, end])
 
   const entityIdOptions = useMemo(() => {
     const ids = filters?.entity_ids ?? []
@@ -219,7 +264,9 @@ export default function AdminAuditPage() {
             }}
           >
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Entity type</label>
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-entity-type">
+                Entity type
+              </label>
               <Select
                 value={entityType}
                 onValueChange={(v) => {
@@ -227,7 +274,7 @@ export default function AdminAuditPage() {
                   setEntityId(ALL)
                 }}
               >
-                <SelectTrigger className="w-40">
+                <SelectTrigger id="audit-entity-type" className="w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -241,9 +288,11 @@ export default function AdminAuditPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Entity id</label>
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-entity-id">
+                Entity id
+              </label>
               <Select value={entityId} onValueChange={setEntityId}>
-                <SelectTrigger className="w-48">
+                <SelectTrigger id="audit-entity-id" className="w-48">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -257,9 +306,11 @@ export default function AdminAuditPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Action</label>
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-action">
+                Action
+              </label>
               <Select value={action} onValueChange={setAction}>
-                <SelectTrigger className="w-32">
+                <SelectTrigger id="audit-action" className="w-32">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -273,9 +324,11 @@ export default function AdminAuditPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Actor</label>
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-actor">
+                Actor
+              </label>
               <Select value={actor} onValueChange={setActor}>
-                <SelectTrigger className="w-44">
+                <SelectTrigger id="audit-actor" className="w-44">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -288,10 +341,50 @@ export default function AdminAuditPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Field select and free-text search are one joined control: they
+                both filter the same column, and as separate flex children the
+                search box got orphaned onto its own line wherever the row
+                happened to wrap. Joined, they wrap as a unit and read as one
+                filter - "changes to <field> containing <text>". */}
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Time range</label>
-              <Select value={timePreset} onValueChange={(v) => setTimePreset(v as TimePreset)}>
-                <SelectTrigger className="w-44">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-changes-search">
+                Changes
+              </label>
+              <div className="flex items-stretch">
+                <Select value={changedField} onValueChange={setChangedField}>
+                  {/* relative + focus z-10 so the focus ring paints over the
+                      neighbour it shares a collapsed border with. */}
+                  <SelectTrigger
+                    id="audit-changed-field"
+                    aria-label="Changed field"
+                    className="relative w-36 rounded-r-none focus-visible:z-10"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>Any field</SelectItem>
+                    {(filters?.changed_fields ?? []).map((f) => (
+                      <SelectItem key={f} value={f}>
+                        {renderFieldName(f)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  id="audit-changes-search"
+                  className="relative -ml-px w-52 rounded-l-none focus-visible:z-10"
+                  placeholder="containing…"
+                  value={changesQuery}
+                  onChange={(e) => setChangesQuery(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="audit-time-range">
+                Time range
+              </label>
+              <Select value={timePreset} onValueChange={setTimePreset}>
+                <SelectTrigger id="audit-time-range" className="w-44">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -338,7 +431,9 @@ export default function AdminAuditPage() {
         </CardContent>
       </Card>
 
-      {!entries ? (
+      {loadError ? (
+        <Alert>{loadError}</Alert>
+      ) : !entries ? (
         <Skeleton className="h-96" />
       ) : entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">
@@ -371,7 +466,7 @@ export default function AdminAuditPage() {
               {entries.map((entry) => (
                 <TableRow key={entry.id}>
                   <TableCell className="whitespace-nowrap">
-                    {new Date(entry.occurred_at).toLocaleString()}
+                    {formatDateTime(entry.occurred_at, timezone)}
                     <span className="ml-1.5 text-[0.65rem] text-muted-foreground">({relativeTime(entry.occurred_at)})</span>
                   </TableCell>
                   <TableCell>
@@ -400,6 +495,17 @@ export default function AdminAuditPage() {
             </TableBody>
           </Table>
         </div>
+      )}
+
+      {entries !== null && !loadError && (
+        <Pagination
+          offset={offset}
+          pageSize={PAGE_SIZE}
+          total={total}
+          noun="audit entry"
+          nounPlural="audit entries"
+          onOffsetChange={setOffset}
+        />
       )}
     </div>
   )

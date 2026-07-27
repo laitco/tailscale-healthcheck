@@ -53,17 +53,24 @@ MASKED_SETTINGS = dbstore.SECRET_SETTINGS
 
 # Settings that require a process restart to take effect even after being
 # saved to the DB, because they're read once at Flask app / logging setup
-# time rather than per-request (Flask-Limiter wiring, logging.basicConfig).
+# time rather than per-request (Flask-Limiter wiring, logging.basicConfig,
+# the WSGI middleware stack, Flask's session config).
 RESTART_REQUIRED_SETTINGS = {
     "rate_limit_enabled", "rate_limit_per_ip", "rate_limit_global",
     "rate_limit_storage_url", "rate_limit_headers_enabled", "log_level",
+    "trusted_proxy_count", "session_cookie_secure", "session_lifetime_minutes",
 }
 
 
-def _setting_field(name):
+def _setting_field(name, meta=None, typed_value=None):
+    """One settings-page field. `meta`/`typed_value` are passed in by
+    api_get_settings() from a pair of batched lookups; the per-setting
+    fallbacks below keep this usable for a single field (and in tests)."""
     env_var, type_name, default, sentinel, group = dbstore.SETTINGS_REGISTRY[name]
-    meta = dbstore.get_setting_meta(name)
-    typed_value = dbstore.get_setting_typed(name)
+    if meta is None:
+        meta = dbstore.get_setting_meta(name)
+    if typed_value is None:
+        typed_value = dbstore.get_setting_typed(name)
     secret = name in MASKED_SETTINGS
     display_value = "********" if (secret and meta.get("value")) else typed_value
     return {
@@ -436,7 +443,11 @@ def api_profile_mfa_disable():
 @admin_bp.route("/api/settings", methods=["GET"])
 @login_required
 def api_get_settings():
-    settings = {name: _setting_field(name) for name in dbstore.SETTINGS_REGISTRY}
+    # Two batched queries for the whole registry instead of two per setting.
+    names = list(dbstore.SETTINGS_REGISTRY)
+    metas = dbstore.get_settings_meta(names)
+    typed = dbstore.get_settings_typed(names)
+    settings = {name: _setting_field(name, metas[name], typed[name]) for name in names}
     poll_status = dbstore.get_poll_status()
     settings["_meta"] = {
         "last_polled_at": dbstore.get_poll_meta(),
@@ -513,10 +524,22 @@ def api_notifications_test():
 @admin_bp.route("/api/poll-now", methods=["POST"])
 @login_required
 def api_poll_now():
+    # Takes the same claim /health/cache/invalidate does. Without it, clicking
+    # "Poll now" ran a second full cycle concurrently with the background
+    # poller (or with another admin's click), so two cycles raced on the same
+    # upsert + audit-diff writes.
+    if not dbstore.try_claim_manual_poll():
+        return jsonify({
+            "ok": False,
+            "message": "A refresh is already in progress; try again shortly.",
+            "last_polled_at": dbstore.get_poll_meta(),
+        }), 202
     try:
         poller.run_poll_cycle()
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        dbstore.release_manual_poll_claim()
     return jsonify({"ok": True, "last_polled_at": dbstore.get_poll_meta()})
 
 
@@ -559,26 +582,36 @@ def api_audit_log():
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         return jsonify({"error": "limit/offset must be integers"}), 400
-    entries = dbstore.list_audit_log(
-        limit=limit,
-        offset=offset,
-        entity_type=request.args.get("entity_type") or None,
-        entity_id=request.args.get("entity_id") or None,
-        action=request.args.get("action") or None,
-        actor=request.args.get("actor") or None,
-        start=request.args.get("start") or None,
-        end=request.args.get("end") or None,
-    )
-    return jsonify({"entries": entries})
+    filters = {
+        "entity_type": request.args.get("entity_type") or None,
+        "entity_id": request.args.get("entity_id") or None,
+        "action": request.args.get("action") or None,
+        "actor": request.args.get("actor") or None,
+        "start": request.args.get("start") or None,
+        "end": request.args.get("end") or None,
+        "changed_field": request.args.get("changed_field") or None,
+        "changes_contains": (request.args.get("changes_contains") or "").strip() or None,
+    }
+    entries = dbstore.list_audit_log(limit=limit, offset=offset, **filters)
+    # `total` is what lets the UI paginate and say how much it isn't showing -
+    # without it a truncated result was indistinguishable from a complete one.
+    return jsonify({
+        "entries": entries,
+        "total": dbstore.count_audit_log(**filters),
+        "limit": limit,
+        "offset": offset,
+    })
 
 
 @admin_bp.route("/api/audit/filters", methods=["GET"])
 @login_required
 def api_audit_filters():
-    """Distinct values to populate the audit log filter UI (actors, entity ids)."""
+    """Distinct values to populate the audit log filter UI (actors, entity ids,
+    and the field names present in changes blobs)."""
     entity_type = request.args.get("entity_type") or None
     return jsonify({
         "actors": dbstore.list_audit_log_actors(),
+        "changed_fields": dbstore.list_audit_log_changed_fields(entity_type),
         "entity_ids": dbstore.list_audit_log_entity_ids(entity_type),
         "entity_types": ["device", "tailnet_key", "setting", "user"],
         "actions": ["created", "updated", "removed"],

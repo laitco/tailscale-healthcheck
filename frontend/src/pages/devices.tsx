@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Download } from 'lucide-react'
 import { DeviceTable } from '@/components/device-table'
 import { Input } from '@/components/ui/input'
@@ -12,17 +12,26 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useHealthContext } from '@/lib/health-context'
+import { useUrlState } from '@/lib/use-url-state'
+import { Pagination } from '@/components/pagination'
 import { toCsv, downloadBlob } from '@/lib/format'
 import type { Device } from '@/lib/types'
+import { Alert } from '@/components/ui/alert'
 
 const ALL = '__all__'
 
+const PAGE_SIZE = 50
+
 export default function DevicesPage() {
   const { health, loading, error } = useHealthContext()
-  const [search, setSearch] = useState('')
-  const [status, setStatus] = useState(ALL)
-  const [os, setOs] = useState(ALL)
-  const [tag, setTag] = useState(ALL)
+  // Filters live in the query string so a filtered view is shareable and
+  // survives a reload / back-forward navigation.
+  const [search, setSearch] = useUrlState('q', '')
+  const [status, setStatus] = useUrlState('status', ALL)
+  const [os, setOs] = useUrlState('os', ALL)
+  const [tag, setTag] = useUrlState('tag', ALL)
+  const [offsetParam, setOffsetParam] = useUrlState('offset', '0')
+  const offset = Math.max(0, parseInt(offsetParam, 10) || 0)
 
   const devices = health?.devices ?? []
 
@@ -53,15 +62,21 @@ export default function DevicesPage() {
     })
   }, [devices, search, os, tag, status])
 
+  // Clamp rather than reset: a filter change can shrink the result set below
+  // the current offset, which would otherwise show an empty page with a
+  // "Previous" button as the only way out.
+  const pageOffset = offset >= filtered.length ? 0 : offset
+  const page = filtered.slice(pageOffset, pageOffset + PAGE_SIZE)
+
   if (loading && !health) {
     return <Skeleton className="h-96" />
   }
 
   if (error && !health) {
     return (
-      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+      <Alert>
         Failed to load devices: {error}
-      </div>
+      </Alert>
     )
   }
 
@@ -124,7 +139,15 @@ export default function DevicesPage() {
         </Button>
       </section>
 
-      <DeviceTable devices={filtered} />
+      <DeviceTable devices={page} />
+
+      <Pagination
+        offset={pageOffset}
+        pageSize={PAGE_SIZE}
+        total={filtered.length}
+        noun="device"
+        onOffsetChange={(next) => setOffsetParam(String(next))}
+      />
     </div>
   )
 }

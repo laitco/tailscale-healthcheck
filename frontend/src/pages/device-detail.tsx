@@ -8,6 +8,9 @@ import { Badge } from '@/components/ui/badge'
 import { fetchDeviceByIdentifier, ApiError } from '@/lib/api'
 import type { Device } from '@/lib/types'
 import NotFoundPage from '@/pages/not-found'
+import { Alert } from '@/components/ui/alert'
+import { formatDateTime } from '@/lib/format'
+import { useTimezone } from '@/lib/health-context'
 
 export default function DeviceDetailPage() {
   const { identifier = '' } = useParams()
@@ -15,6 +18,7 @@ export default function DeviceDetailPage() {
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const timezone = useTimezone()
 
   useEffect(() => {
     let cancelled = false
@@ -49,9 +53,9 @@ export default function DeviceDetailPage() {
 
   if (error || !device) {
     return (
-      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+      <Alert>
         Failed to load device: {error}
-      </div>
+      </Alert>
     )
   }
 
@@ -70,7 +74,7 @@ export default function DeviceDetailPage() {
           <Field label="OS" value={device.os} />
           <Field label="Client Version" value={device.clientVersion || '—'} />
           <Field label="Hostname" value={device.hostname} />
-          <Field label="Last Seen" value={device.lastSeen} />
+          <Field label="Last Seen" value={formatDateTime(device.lastSeen, timezone)} />
           <Field label="Tags" value={(device.tags || []).join(', ') || '—'} />
           <Field
             label="Update"
@@ -113,7 +117,9 @@ export default function DeviceDetailPage() {
             label="Overall Health"
             value={<StatusBadge ok={device.healthy} trueText="Healthy" falseText="Unhealthy" />}
           />
-          {device.keyExpiryTimestamp && <Field label="Key Expiry" value={device.keyExpiryTimestamp} />}
+          {device.keyExpiryTimestamp && (
+            <Field label="Key Expiry" value={formatDateTime(device.keyExpiryTimestamp, timezone)} />
+          )}
         </CardContent>
       </Card>
     </div>

@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
@@ -116,6 +117,16 @@ def test_poll_cycle_skips_when_auth_unconfigured(tmp_path, monkeypatch):
     assert dbstore.list_poller_log() == []
 
 
+def _live_timer():
+    """A running Timer, standing in for the 50-minute renewal one a process
+    starts after successfully fetching a token. Long delay so it never fires
+    during a test; callers must cancel it."""
+    timer = threading.Timer(3600, lambda: None)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def test_oauth_token_refetched_when_client_id_changes(tmp_path, monkeypatch):
     # A cached ACCESS_TOKEN for an OLD oauth_client_id must not silently
     # keep being used after credentials are replaced via the settings UI -
@@ -149,7 +160,8 @@ def test_oauth_token_refetched_when_client_id_changes(tmp_path, monkeypatch):
 
 def test_oauth_token_not_refetched_when_client_id_unchanged(tmp_path, monkeypatch):
     # The self-heal must not force a needless re-fetch every cycle once a
-    # valid, current token is already cached.
+    # valid, current token is already cached AND this process has a live
+    # renewal timer of its own (the steady state - see _live_timer).
     _fresh_db(tmp_path, monkeypatch)
     dbstore.set_setting("oauth_client_id", "same-client", source="db")
     dbstore.set_setting("oauth_client_secret", "same-secret", source="db")
@@ -159,12 +171,15 @@ def test_oauth_token_not_refetched_when_client_id_unchanged(tmp_path, monkeypatc
     fake.fetch_oauth_token = lambda: fetch_calls.__setitem__("count", fetch_calls["count"] + 1)
     fake.ACCESS_TOKEN = "current-token"
     fake.ACCESS_TOKEN_CLIENT_ID = "same-client"
+    timer = _live_timer()
+    fake.TOKEN_RENEWAL_TIMER = timer
 
     sys.modules["healthcheck"] = fake
     try:
         poller.run_poll_cycle()
     finally:
         sys.modules.pop("healthcheck", None)
+        timer.cancel()
 
     assert fetch_calls["count"] == 0
 
@@ -299,3 +314,81 @@ def test_poll_cycle_removes_device_and_key_dropped_from_api_response(tmp_path, m
     assert history[0]["counter_healthy_true"] == 1
     # ...but the new snapshot (taken after removal) must not keep counting it.
     assert history[1]["counter_healthy_true"] == 0
+
+
+def test_oauth_token_refetched_when_renewal_timer_is_dead(tmp_path, monkeypatch):
+    """The post-fork case: a worker inherits a valid ACCESS_TOKEN from the
+    preloaded master but not the master's renewal thread (threads don't
+    survive fork). Without refetching here the polling worker would coast on
+    the inherited token until it expired and a 401 forced a refresh - correct,
+    but purely reactive. One fetch re-establishes a live timer in the process
+    that actually polls."""
+    _fresh_db(tmp_path, monkeypatch)
+    dbstore.set_setting("oauth_client_id", "same-client", source="db")
+    dbstore.set_setting("oauth_client_secret", "same-secret", source="db")
+
+    fake = _fake_healthcheck_module([], [])
+    fetch_calls = {"count": 0}
+    timers = []
+
+    def fake_fetch_oauth_token():
+        fetch_calls["count"] += 1
+        # Mirrors the real fetch: a successful fetch starts a renewal timer.
+        timer = _live_timer()
+        timers.append(timer)
+        fake.TOKEN_RENEWAL_TIMER = timer
+
+    fake.fetch_oauth_token = fake_fetch_oauth_token
+    fake.ACCESS_TOKEN = "token-inherited-from-master"
+    fake.ACCESS_TOKEN_CLIENT_ID = "same-client"
+    fake.TOKEN_RENEWAL_TIMER = None  # no timer in this process
+
+    sys.modules["healthcheck"] = fake
+    try:
+        poller.run_poll_cycle()
+        assert fetch_calls["count"] == 1, "inherited token without a timer must trigger one fetch"
+        # Self-limiting: the timer the fetch started means the next cycle skips.
+        poller.run_poll_cycle()
+        poller.run_poll_cycle()
+        assert fetch_calls["count"] == 1, "must not refetch a token every cycle"
+    finally:
+        sys.modules.pop("healthcheck", None)
+        for t in timers:
+            t.cancel()
+
+
+def test_needs_oauth_refresh_cases():
+    """Unit coverage for the decision itself, without a whole poll cycle."""
+    def mod(token="t", client="c", timer=None):
+        m = types.SimpleNamespace(
+            ACCESS_TOKEN=token, ACCESS_TOKEN_CLIENT_ID=client, TOKEN_RENEWAL_TIMER=timer
+        )
+        return m
+
+    live = _live_timer()
+    try:
+        # Steady state: token for the right client, live timer -> no refresh.
+        assert poller._needs_oauth_refresh(mod(timer=live), "c") is False
+        # No token yet.
+        assert poller._needs_oauth_refresh(mod(token=None, timer=live), "c") is True
+        # Token belongs to a replaced client id.
+        assert poller._needs_oauth_refresh(mod(client="old", timer=live), "c") is True
+        # Token present but no renewal timer in this process (post-fork).
+        assert poller._needs_oauth_refresh(mod(timer=None), "c") is True
+        # Not an OAuth install at all - a static token needs no refreshing.
+        assert poller._needs_oauth_refresh(mod(timer=None), None) is False
+    finally:
+        live.cancel()
+
+
+def test_needs_oauth_refresh_treats_dead_timer_as_absent(tmp_path, monkeypatch):
+    """A cancelled/finished Timer object is not a live renewal - this is what
+    an inherited-across-fork timer looks like to the child process."""
+    _fresh_db(tmp_path, monkeypatch)
+    dbstore.set_setting("oauth_client_id", "c", source="db")
+    dbstore.set_setting("oauth_client_secret", "s", source="db")
+
+    dead = threading.Timer(3600, lambda: None)  # never started -> not alive
+    m = types.SimpleNamespace(ACCESS_TOKEN="t", ACCESS_TOKEN_CLIENT_ID="c", TOKEN_RENEWAL_TIMER=dead)
+
+    assert poller._needs_oauth_refresh(m, "c") is True

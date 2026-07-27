@@ -5,17 +5,32 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchUsers, createUser, deleteUser, AdminApiError, type AdminUser } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { fetchUsers, createUser, deleteUser, errorMessage, type AdminUser } from '@/lib/admin-api'
+import { useTimezone } from '@/lib/health-context'
+import { formatDateTime } from '@/lib/format'
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const timezone = useTimezone()
 
   function load() {
-    fetchUsers().then((data) => setUsers(data.users))
+    // Without this catch the rejection was unhandled and `users` stayed null,
+    // leaving the page on its loading skeleton forever with no explanation.
+    setLoadError(null)
+    fetchUsers()
+      .then((data) => setUsers(data.users))
+      .catch((err) => {
+        setUsers([])
+        setLoadError(errorMessage(err, 'Failed to load users'))
+      })
   }
 
   useEffect(load, [])
@@ -30,20 +45,20 @@ export default function AdminUsersPage() {
       setPassword('')
       load()
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Failed to create user')
+      setError(errorMessage(err, 'Failed to create user'))
     } finally {
       setSubmitting(false)
     }
   }
 
   async function onDelete(user: string) {
-    if (!confirm(`Delete user "${user}"?`)) return
+    setPendingDelete(null)
     setError(null)
     try {
       await deleteUser(user)
       load()
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Failed to delete user')
+      setError(errorMessage(err, 'Failed to delete user'))
     }
   }
 
@@ -57,9 +72,7 @@ export default function AdminUsersPage() {
         <CardContent>
           <form className="flex flex-wrap items-end gap-2" onSubmit={onCreate}>
             {error && (
-              <div className="w-full rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-                {error}
-              </div>
+              <Alert className="w-full p-2 text-xs">{error}</Alert>
             )}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground" htmlFor="new-username">
@@ -92,7 +105,9 @@ export default function AdminUsersPage() {
           <CardTitle>Users</CardTitle>
         </CardHeader>
         <CardContent>
-          {!users ? (
+          {loadError ? (
+            <Alert>{loadError}</Alert>
+          ) : !users ? (
             <Skeleton className="h-24" />
           ) : (
             <Table>
@@ -108,14 +123,15 @@ export default function AdminUsersPage() {
                 {users.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell>{u.username}</TableCell>
-                    <TableCell>{new Date(u.created_at).toLocaleString()}</TableCell>
-                    <TableCell>{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}</TableCell>
+                    <TableCell>{formatDateTime(u.created_at, timezone)}</TableCell>
+                    <TableCell>{u.last_login_at ? formatDateTime(u.last_login_at, timezone) : '—'}</TableCell>
                     <TableCell className="text-right">
                       <Button
                         variant="ghost"
                         size="icon-sm"
                         disabled={users.length <= 1}
-                        onClick={() => onDelete(u.username)}
+                        aria-label={`Delete user ${u.username}`}
+                        onClick={() => setPendingDelete(u.username)}
                       >
                         <Trash2 />
                       </Button>
@@ -127,6 +143,15 @@ export default function AdminUsersPage() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        title={`Delete user "${pendingDelete}"?`}
+        description="This immediately revokes their access. It cannot be undone."
+        confirmLabel="Delete user"
+        onConfirm={() => pendingDelete && onDelete(pendingDelete)}
+      />
     </div>
   )
 }

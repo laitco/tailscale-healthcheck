@@ -5,8 +5,9 @@ import fcntl
 import hmac
 import requests
 import random
+import secrets
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, redirect, request, render_template, url_for
+from flask import Flask, g, jsonify, redirect, request, render_template, url_for
 try:  # Optional dependency; app runs without rate limiting if unavailable
     from flask_limiter import Limiter  # type: ignore
     from flask_limiter.util import get_remote_address  # type: ignore
@@ -53,6 +54,24 @@ dbstore.init_db()
 dbstore.sync_env_settings()
 
 app.secret_key = dbstore.get_secret_key()
+
+# request.remote_addr feeds both rate limiters and the failed-login lockout, so
+# behind an undeclared reverse proxy every client looks like the proxy: one
+# attacker's failed logins would lock out every user, and the per-IP request
+# limit would silently become a global one. Opt-in (default 0 = off) because
+# trusting X-Forwarded-For when there is no proxy would let any client spoof
+# its own address. Read once here, hence in admin.RESTART_REQUIRED_SETTINGS.
+TRUSTED_PROXY_COUNT = max(0, dbstore.get_setting_typed("trusted_proxy_count"))
+if TRUSTED_PROXY_COUNT:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=TRUSTED_PROXY_COUNT,
+        x_proto=TRUSTED_PROXY_COUNT,
+        x_host=TRUSTED_PROXY_COUNT,
+        x_port=TRUSTED_PROXY_COUNT,
+    )
+
 auth.init_app(app)
 app.register_blueprint(admin_bp)
 
@@ -199,6 +218,10 @@ def _build_poll_meta() -> dict:
     return {
         "last_polled_at": dbstore.get_poll_meta(),
         "poll_interval_seconds": poller.poll_interval_seconds(),
+        # So the dashboard can render every timestamp in the tailnet's
+        # configured timezone without pulling the whole (admin-only) settings
+        # payload just to read this one value.
+        "timezone": get_timezone_name(),
         "last_poll_ok": status.get("ok"),
         "last_poll_error": status.get("error"),
         "last_poll_auth_error": bool(status.get("auth_error")),
@@ -368,6 +391,46 @@ def _gate_dashboard_ui():
     if not current_user.is_authenticated:
         return redirect(url_for("admin.login_page"))
     return None
+
+@app.before_request
+def _generate_csp_nonce():
+    """Fresh per-request nonce for the one inline script in templates/layout.html
+    (the anti-FOUC dark-mode toggle), so the CSP below never needs
+    'unsafe-inline' for scripts."""
+    g.csp_nonce = secrets.token_urlsafe(16)
+    return None
+
+@app.context_processor
+def _inject_csp_nonce():
+    return {"csp_nonce": getattr(g, "csp_nonce", "")}
+
+# Everything the UI loads is served from this origin (the Vite bundle, the CSS,
+# and the self-hosted Roboto woff2 subsets), so a strict policy costs nothing.
+# style-src keeps 'unsafe-inline' because Radix/shadcn components set inline
+# style attributes at runtime (sizing, CSS custom properties) - scripts, which
+# are what actually matter here, are nonce-gated.
+_CSP_TEMPLATE = (
+    "default-src 'self'; "
+    "script-src 'self' 'nonce-{nonce}'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'"
+)
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy", _CSP_TEMPLATE.format(nonce=getattr(g, "csp_nonce", ""))
+    )
+    return response
 
 @app.before_request
 def _enforce_file_rate_limits():
@@ -744,7 +807,9 @@ def _compute_health_summary(devices):
             continue
         last_seen_local = _parse_last_seen_local(device, tz)
         expires = None
-        key_healthy = True if device.get("keyExpiryDisabled", False) else True
+        # A device with key expiry disabled can never have an expiring key, so
+        # it starts healthy and skips the expiry computation below entirely.
+        key_healthy = True
         key_days_to_expire = None
         if not device.get("keyExpiryDisabled", False) and device.get("expires"):
             expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
@@ -755,7 +820,6 @@ def _compute_health_summary(devices):
 
         online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
         update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
-        key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
         # Requires the explicit tailnet_lock_enabled opt-in (default off), not
         # just a non-empty tailnetLockError - an admin has to confirm they
         # actually use Tailnet Lock before it can affect health.
@@ -777,7 +841,11 @@ def _compute_health_summary(devices):
             counter_key_healthy_true += 1
         else:
             counter_key_healthy_false += 1
-        if not device.get("updateAvailable", False):
+        # Counts update_is_healthy, not the raw updateAvailable flag, so the
+        # *_UPDATE_HEALTHY filter settings actually reach global_update_healthy
+        # and the dashboard's "Devices Up to Date" tile - a device forced
+        # update-healthy must not be counted against them.
+        if update_is_healthy:
             counter_update_healthy_true += 1
         else:
             counter_update_healthy_false += 1
@@ -873,6 +941,20 @@ UPDATE_HEALTHY_FILTER_SETTINGS = (
     "include_tag_update_healthy", "exclude_tag_update_healthy",
 )
 
+def _device_identifiers(device):
+    """The lowercased names a device can be addressed by: hostname, id, full
+    name, and machineName (the name before the first dot).
+
+    Shared by should_include_device()'s identifier filtering and
+    /health/<identifier>'s lookup, so both accept exactly the same set.
+    """
+    return [
+        device["hostname"].lower(),
+        device["id"].lower(),
+        device["name"].lower(),
+        device["name"].split('.')[0].lower(),  # machineName
+    ]
+
 def should_include_device(device, filters=None):
     """
     Check if a device should be included based on filter settings.
@@ -887,13 +969,7 @@ def should_include_device(device, filters=None):
     include_os, exclude_os = filters["include_os"], filters["exclude_os"]
     include_identifier, exclude_identifier = filters["include_identifier"], filters["exclude_identifier"]
 
-    # Get device identifiers
-    identifiers = [
-        device["hostname"].lower(),
-        device["id"].lower(),
-        device["name"].lower(),
-        device["name"].split('.')[0].lower()  # machineName
-    ]
+    identifiers = _device_identifiers(device)
 
     # Get device tags without 'tag:' prefix
     device_tags = [tag.replace('tag:', '') for tag in device.get("tags", [])]
@@ -1128,148 +1204,51 @@ def health_check_redirect():
 @app.route('/health/<identifier>', methods=['GET'])
 @_apply_limits
 def health_check_by_identifier(identifier):
+    """Health for a single device, addressed by hostname, id, name, or machineName.
+
+    A thin view over _compute_health_summary(): the device is located in the
+    raw snapshot first, then summarized on its own so the returned `metrics`
+    stay scoped to just this device (counters of 1/0), which is what this
+    endpoint has always reported. Summarizing through the shared helper is
+    also what applies the device include/exclude filters here - a device
+    filtered out of /health is likewise not addressable here, and 404s.
+    """
     if not _health_endpoint_token_ok():
         return jsonify({"error": "Unauthorized"}), 401
     try:
         # Fetch devices from the SQLite snapshot maintained by the background poller
         devices = fetch_devices()
-        cfg = dbstore.get_settings_typed(HEALTH_SUMMARY_SETTINGS)
-        update_healthy_filters = {name: cfg[name] for name in UPDATE_HEALTHY_FILTER_SETTINGS}
-
-        # Get the timezone object
-        try:
-            tz = pytz.timezone(cfg["timezone"])
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone: {cfg['timezone']}")
-            return jsonify({"error": f"Unknown timezone: {cfg['timezone']}"}), 400
-
-        # Calculate the threshold time (now - online_threshold_minutes) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=cfg["online_threshold_minutes"])
-        logging.debug(f"Threshold time: {threshold_time.isoformat()}")
-
-        # Convert identifier to lowercase for case-insensitive comparison
         identifier_lower = identifier.lower()
+        match = next(
+            (d for d in devices if identifier_lower in _device_identifiers(d)),
+            None,
+        )
+        if match is None:
+            return jsonify({"error": "Device not found"}), 404
 
-        # Initialize counters
-        counter_healthy_true = 0
-        counter_healthy_false = 0
-        counter_healthy_online_true = 0
-        counter_healthy_online_false = 0
-        counter_key_healthy_true = 0
-        counter_key_healthy_false = 0
-        counter_update_healthy_true = 0
-        counter_update_healthy_false = 0
+        try:
+            health_status, metrics = _compute_health_summary([match])
+        except ValueError as exc:
+            logging.error(str(exc))
+            return jsonify({"error": str(exc)}), 400
 
-        # Find the device with the matching hostname, ID, name, or machineName
-        for device in devices:
-            machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-            if (
-                device["hostname"].lower() == identifier_lower
-                or device["id"].lower() == identifier_lower
-                or device["name"].lower() == identifier_lower
-                or machine_name.lower() == identifier_lower
-            ):
-                last_seen_local = _parse_last_seen_local(device, tz)
-                expires = None
-                key_healthy = True if device.get("keyExpiryDisabled", False) else True
-                key_days_to_expire = None
-                if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                    expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
-                    expires = expires.astimezone(tz)
-                    time_until_expiry = expires - datetime.now(tz)
-                    key_healthy = time_until_expiry.total_seconds() / 60 > cfg["key_threshold_minutes"]
-                    key_days_to_expire = time_until_expiry.days
+        # Empty means the device exists but is excluded by the configured
+        # device filters - indistinguishable from "not found" to a consumer.
+        if not health_status:
+            return jsonify({"error": "Device not found"}), 404
 
-                if last_seen_local:
-                    logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-                elif device.get("connectedToControl") is True:
-                    logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
-                else:
-                    logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
-
-                online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
-                update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
-                key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-                lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
-                is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
-                is_healthy = online_is_healthy and key_healthy and lock_healthy
-                if cfg["update_healthy_is_included_in_health"]:
-                    is_healthy = is_healthy and update_is_healthy
-
-                # Count only this specific device
-                counter_healthy_true = 1 if is_healthy else 0
-                counter_healthy_false = 0 if is_healthy else 1
-                counter_healthy_online_true = 1 if online_is_healthy else 0
-                counter_healthy_online_false = 0 if online_is_healthy else 1
-                counter_key_healthy_true = 1 if key_healthy else 0
-                counter_key_healthy_false = 0 if key_healthy else 1
-                counter_lock_healthy_true = 1 if lock_healthy else 0
-                counter_lock_healthy_false = 0 if lock_healthy else 1
-
-                # Update update healthy counters
-                if not device.get("updateAvailable", False):
-                    counter_update_healthy_true += 1
-                else:
-                    counter_update_healthy_false += 1
-
-                health_info = {
-                    "id": device["id"],
-                    "device": device["name"],
-                    "machineName": machine_name,
-                    "hostname": device["hostname"],
-                    "os": device["os"],
-                    "clientVersion": device.get("clientVersion", ""),
-                    "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": update_is_healthy,
-                    "connectedToControl": device.get("connectedToControl"),
-                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
-                    "online_healthy": online_is_healthy,
-                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
-                    "tailnetLockError": device.get("tailnetLockError", ""),
-                    "lock_healthy": lock_healthy,
-                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
-                    "isLockSigner": is_lock_signer,
-                    "key_healthy": key_healthy,
-                    "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy and lock_healthy,
-                    "tags": remove_tag_prefix(device.get("tags", []))
-                }
-
-                if not device.get("keyExpiryDisabled", False):
-                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-
-                response = {
-                    "device": health_info,
-                    "metrics": {
-                        "counter_healthy_true": counter_healthy_true,
-                        "counter_healthy_false": counter_healthy_false,
-                        "counter_healthy_online_true": counter_healthy_online_true,
-                        "counter_healthy_online_false": counter_healthy_online_false,
-                        "counter_key_healthy_true": counter_key_healthy_true,
-                        "counter_key_healthy_false": counter_key_healthy_false,
-                        "counter_update_healthy_true": counter_update_healthy_true,
-                        "counter_update_healthy_false": counter_update_healthy_false,
-                        "counter_lock_healthy_true": counter_lock_healthy_true,
-                        "counter_lock_healthy_false": counter_lock_healthy_false,
-                        "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
-                        "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
-                        "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
-                        "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
-                        "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
-                    },
-                    # If polling has been failing (credentials revoked, API
-                    # unreachable), this device's fields are the last known
-                    # snapshot, not current - poll_meta lets a monitoring
-                    # consumer (e.g. the Gatus check in the README) detect
-                    # that a "healthy: true" response may be stale, the same
-                    # way /health already does.
-                    "poll_meta": _build_poll_meta(),
-                }
-
-                return jsonify(response)
-
-        # If no matching hostname, ID, name, or machineName is found
-        return jsonify({"error": "Device not found"}), 404
+        response = {
+            "device": health_status[0],
+            "metrics": metrics,
+            # If polling has been failing (credentials revoked, API
+            # unreachable), this device's fields are the last known
+            # snapshot, not current - poll_meta lets a monitoring
+            # consumer (e.g. the Gatus check in the README) detect
+            # that a "healthy: true" response may be stale, the same
+            # way /health already does.
+            "poll_meta": _build_poll_meta(),
+        }
+        return jsonify(response)
 
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
@@ -1282,296 +1261,56 @@ def health_check_by_identifier(identifier):
         logging.error(f"Error in health_check_by_identifier: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/health/unhealthy', methods=['GET'])
-@_apply_limits
-def health_check_unhealthy():
+
+def _health_subset_response(want_healthy: bool, endpoint_name: str):
+    """Shared body for /health/healthy and /health/unhealthy.
+
+    Both are views over /health: `devices` is partitioned on each device's
+    `healthy` flag, while `metrics` stays the tailnet-wide block /health
+    returns. Scoping the counters to the returned subset (as these endpoints
+    used to) made every global_* flag on /health/healthy permanently true,
+    since counter_*_false was then structurally always 0.
+    """
     if not _health_endpoint_token_ok():
         return jsonify({"error": "Unauthorized"}), 401
     try:
         # Fetch devices from the SQLite snapshot maintained by the background poller
         devices = fetch_devices()
-        cfg = dbstore.get_settings_typed(HEALTH_SUMMARY_SETTINGS)
-        update_healthy_filters = {name: cfg[name] for name in UPDATE_HEALTHY_FILTER_SETTINGS}
 
-        # Get the timezone object
         try:
-            tz = pytz.timezone(cfg["timezone"])
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone: {cfg['timezone']}")
-            return jsonify({"error": f"Unknown timezone: {cfg['timezone']}"}), 400
-
-        # Calculate the threshold time (now - online_threshold_minutes) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=cfg["online_threshold_minutes"])
-        logging.debug(f"Threshold time: {threshold_time.isoformat()}")
-
-        # Initialize counters
-        counter_healthy_true = 0
-        counter_healthy_false = 0
-        counter_healthy_online_true = 0
-        counter_healthy_online_false = 0
-        counter_key_healthy_true = 0
-        counter_key_healthy_false = 0
-        counter_update_healthy_true = 0
-        counter_update_healthy_false = 0
-        counter_lock_healthy_true = 0
-        counter_lock_healthy_false = 0
-
-        # Check health status for each device and filter unhealthy devices
-        unhealthy_devices = []
-        for device in devices:
-            last_seen_local = _parse_last_seen_local(device, tz)  # Convert lastSeen to the specified timezone
-            expires = None
-            key_healthy = True if device.get("keyExpiryDisabled", False) else True
-            key_days_to_expire = None
-            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
-                expires = expires.astimezone(tz)
-                time_until_expiry = expires - datetime.now(tz)
-                key_healthy = time_until_expiry.total_seconds() / 60 > cfg["key_threshold_minutes"]
-                key_days_to_expire = time_until_expiry.days
-
-            if last_seen_local:
-                logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            elif device.get("connectedToControl") is True:
-                logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
-            else:
-                logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
-
-            online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
-            update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
-            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-            lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
-            is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
-            is_healthy = online_is_healthy and key_healthy and lock_healthy
-            if cfg["update_healthy_is_included_in_health"]:
-                is_healthy = is_healthy and update_is_healthy
-
-            if not is_healthy:
-                # Count only unhealthy devices that will be output
-                counter_healthy_false += 1
-                if not online_is_healthy:
-                    counter_healthy_online_false += 1
-                else:
-                    counter_healthy_online_true += 1
-                if not key_healthy:
-                    counter_key_healthy_false += 1
-                else:
-                    counter_key_healthy_true += 1
-                if not lock_healthy:
-                    counter_lock_healthy_false += 1
-                else:
-                    counter_lock_healthy_true += 1
-
-                # Update update healthy counters
-                if not device.get("updateAvailable", False):
-                    counter_update_healthy_true += 1
-                else:
-                    counter_update_healthy_false += 1
-
-                machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-                health_info = {
-                    "id": device["id"],
-                    "device": device["name"],
-                    "machineName": machine_name,
-                    "hostname": device["hostname"],
-                    "os": device["os"],
-                    "clientVersion": device.get("clientVersion", ""),
-                    "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": update_is_healthy,
-                    "connectedToControl": device.get("connectedToControl"),
-                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
-                    "online_healthy": online_is_healthy,
-                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
-                    "tailnetLockError": device.get("tailnetLockError", ""),
-                    "lock_healthy": lock_healthy,
-                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
-                    "isLockSigner": is_lock_signer,
-                    "key_healthy": key_healthy,
-                    "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy and lock_healthy,
-                    "tags": remove_tag_prefix(device.get("tags", []))
-                }
-
-                if not device.get("keyExpiryDisabled", False):
-                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-
-                unhealthy_devices.append(health_info)
+            health_status, metrics = _compute_health_summary(devices)
+        except ValueError as exc:
+            logging.error(str(exc))
+            return jsonify({"error": str(exc)}), 400
 
         response = {
-            "devices": unhealthy_devices,
-            "metrics": {
-                "counter_healthy_true": counter_healthy_true,
-                "counter_healthy_false": counter_healthy_false,
-                "counter_healthy_online_true": counter_healthy_online_true,
-                "counter_healthy_online_false": counter_healthy_online_false,
-                "counter_key_healthy_true": counter_key_healthy_true,
-                "counter_key_healthy_false": counter_key_healthy_false,
-                "counter_update_healthy_true": counter_update_healthy_true,
-                "counter_update_healthy_false": counter_update_healthy_false,
-                "counter_lock_healthy_true": counter_lock_healthy_true,
-                "counter_lock_healthy_false": counter_lock_healthy_false,
-                "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
-                "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
-                "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
-                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
-                "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
-            },
+            "devices": [d for d in health_status if bool(d["healthy"]) is want_healthy],
+            "metrics": metrics,
             "poll_meta": _build_poll_meta(),
         }
-
         return jsonify(response)
 
     except requests.exceptions.Timeout as e:
         logging.error(f"External API request timed out: {e}")
         return jsonify({"error": "Request to external API timed out"}), 504
     except requests.exceptions.HTTPError as e:
-        logging.error(f"Upstream Tailscale API error in health_check_unhealthy: {e}")
+        logging.error(f"Upstream Tailscale API error in {endpoint_name}: {e}")
         payload, status = _upstream_error_payload(e)
         return jsonify(payload), status
     except Exception as e:
-        logging.error(f"Error in health_check_unhealthy: {e}")
+        logging.error(f"Error in {endpoint_name}: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/health/unhealthy', methods=['GET'])
+@_apply_limits
+def health_check_unhealthy():
+    return _health_subset_response(False, "health_check_unhealthy")
 
 @app.route('/health/healthy', methods=['GET'])
 @_apply_limits
 def health_check_healthy():
-    if not _health_endpoint_token_ok():
-        return jsonify({"error": "Unauthorized"}), 401
-    try:
-        # Fetch devices from the SQLite snapshot maintained by the background poller
-        devices = fetch_devices()
-        cfg = dbstore.get_settings_typed(HEALTH_SUMMARY_SETTINGS)
-        update_healthy_filters = {name: cfg[name] for name in UPDATE_HEALTHY_FILTER_SETTINGS}
+    return _health_subset_response(True, "health_check_healthy")
 
-        # Get the timezone object
-        try:
-            tz = pytz.timezone(cfg["timezone"])
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone: {cfg['timezone']}")
-            return jsonify({"error": f"Unknown timezone: {cfg['timezone']}"}), 400
-
-        # Calculate the threshold time (now - online_threshold_minutes) in the specified timezone
-        threshold_time = datetime.now(tz) - timedelta(minutes=cfg["online_threshold_minutes"])
-        logging.debug(f"Threshold time: {threshold_time.isoformat()}")
-
-        # Initialize counters
-        counter_healthy_true = 0
-        counter_healthy_false = 0
-        counter_healthy_online_true = 0
-        counter_healthy_online_false = 0
-        counter_key_healthy_true = 0
-        counter_key_healthy_false = 0
-        counter_update_healthy_true = 0
-        counter_update_healthy_false = 0
-        counter_lock_healthy_true = 0
-        counter_lock_healthy_false = 0
-
-        # Check health status for each device and filter healthy devices
-        healthy_devices = []
-        for device in devices:
-            last_seen_local = _parse_last_seen_local(device, tz)  # Convert lastSeen to the specified timezone
-            expires = None
-            key_healthy = True if device.get("keyExpiryDisabled", False) else True
-            key_days_to_expire = None
-            if not device.get("keyExpiryDisabled", False) and device.get("expires"):
-                expires = parser.isoparse(device["expires"]).replace(tzinfo=pytz.UTC)
-                expires = expires.astimezone(tz)
-                time_until_expiry = expires - datetime.now(tz)
-                key_healthy = time_until_expiry.total_seconds() / 60 > cfg["key_threshold_minutes"]
-                key_days_to_expire = time_until_expiry.days
-
-            if last_seen_local:
-                logging.debug(f"Device {device['name']} last seen (local): {last_seen_local.isoformat()}")
-            elif device.get("connectedToControl") is True:
-                logging.debug(f"Device {device['name']} connected to control; lastSeen omitted.")
-            else:
-                logging.debug(f"Device {device['name']} last seen timestamp unavailable.")
-
-            online_is_healthy = _determine_online_status(device, last_seen_local, threshold_time)
-            update_is_healthy = should_force_update_healthy(device, update_healthy_filters) or not device.get("updateAvailable", False)
-            key_healthy = True if device.get("keyExpiryDisabled", False) else key_healthy
-            lock_healthy = (not cfg["tailnet_lock_enabled"]) or not device.get("tailnetLockError")
-            is_lock_signer = notifier.is_lock_signer(device.get("tags", []), cfg["lock_signer_tags"])
-            is_healthy = online_is_healthy and key_healthy and lock_healthy
-            if cfg["update_healthy_is_included_in_health"]:
-                is_healthy = is_healthy and update_is_healthy
-
-            if is_healthy:
-                # Count only healthy devices that will be output
-                counter_healthy_true += 1
-                counter_healthy_online_true += 1
-                counter_key_healthy_true += 1
-                counter_lock_healthy_true += 1
-
-                # Update update healthy counters
-                if not device.get("updateAvailable", False):
-                    counter_update_healthy_true += 1
-                else:
-                    counter_update_healthy_false += 1
-
-                machine_name = device["name"].split('.')[0]  # Extract machine name before the first dot
-                health_info = {
-                    "id": device["id"],
-                    "device": device["name"],
-                    "machineName": machine_name,
-                    "hostname": device["hostname"],
-                    "os": device["os"],
-                    "clientVersion": device.get("clientVersion", ""),
-                    "updateAvailable": device.get("updateAvailable", False),
-                    "update_healthy": update_is_healthy,
-                    "connectedToControl": device.get("connectedToControl"),
-                    "lastSeen": last_seen_local.isoformat() if last_seen_local else None,  # Include timezone offset in ISO format
-                    "online_healthy": online_is_healthy,
-                    "keyExpiryDisabled": device.get("keyExpiryDisabled", False),
-                    "tailnetLockError": device.get("tailnetLockError", ""),
-                    "lock_healthy": lock_healthy,
-                    "tailnetLockEnabled": cfg["tailnet_lock_enabled"],
-                    "isLockSigner": is_lock_signer,
-                    "key_healthy": key_healthy,
-                    "key_days_to_expire": key_days_to_expire,
-                    "healthy": online_is_healthy and key_healthy and lock_healthy,
-                    "tags": remove_tag_prefix(device.get("tags", []))
-                }
-
-                if not device.get("keyExpiryDisabled", False):
-                    health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
-
-                healthy_devices.append(health_info)
-
-        response = {
-            "devices": healthy_devices,
-            "metrics": {
-                "counter_healthy_true": counter_healthy_true,
-                "counter_healthy_false": counter_healthy_false,
-                "counter_healthy_online_true": counter_healthy_online_true,
-                "counter_healthy_online_false": counter_healthy_online_false,
-                "counter_key_healthy_true": counter_key_healthy_true,
-                "counter_key_healthy_false": counter_key_healthy_false,
-                "counter_update_healthy_true": counter_update_healthy_true,
-                "counter_update_healthy_false": counter_update_healthy_false,
-                "counter_lock_healthy_true": counter_lock_healthy_true,
-                "counter_lock_healthy_false": counter_lock_healthy_false,
-                "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
-                "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
-                "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
-                "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
-                "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"]
-            },
-            "poll_meta": _build_poll_meta(),
-        }
-
-        return jsonify(response)
-
-    except requests.exceptions.Timeout as e:
-        logging.error(f"External API request timed out: {e}")
-        return jsonify({"error": "Request to external API timed out"}), 504
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"Upstream Tailscale API error in health_check_healthy: {e}")
-        payload, status = _upstream_error_payload(e)
-        return jsonify(payload), status
-    except Exception as e:
-        logging.error(f"Error in health_check_healthy: {e}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/health/cache/invalidate', methods=['GET'])
 @_apply_limits

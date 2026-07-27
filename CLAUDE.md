@@ -26,7 +26,7 @@ FLASK_APP=healthcheck.py flask run --port 5000
 gunicorn -w 4 -b 0.0.0.0:5000 -c gunicorn_config.py healthcheck:app
 
 # Lint (see .flake8 for max-line-length=140 and ignored rules)
-pip install flake8 && flake8 healthcheck.py dbstore.py auth.py poller.py admin.py
+pip install flake8 && flake8 healthcheck.py dbstore.py auth.py poller.py admin.py notifier.py gunicorn_config.py
 
 # Tests
 pip install pytest && pytest -q
@@ -120,16 +120,23 @@ Key pieces, in the order a change usually touches them:
    include/exclude + wildcard convention.
 7. **Health computation** — `_compute_health_summary()` derives per-device and global health
    (`online_healthy`, `key_healthy`, `update_healthy`, `global_*`) from raw device data plus the configured
-   thresholds. `_compute_keys_summary()` does the analogous computation for tailnet API/auth keys. Note:
-   `/health/<identifier>`, `/health/unhealthy`, `/health/healthy` duplicate this logic inline rather than
-   calling `_compute_health_summary()` — a change here usually needs updating all 4 places.
+   thresholds. `_compute_keys_summary()` does the analogous computation for tailnet API/auth keys.
+   **`_compute_health_summary()` is the single implementation** — `/health/healthy` and
+   `/health/unhealthy` are partitions of its output on the `healthy` key (via `_health_subset_response()`,
+   sharing `/health`'s tailnet-wide `metrics` block), and `/health/<identifier>` locates the device with
+   `_device_identifiers()` and summarizes that one device so its `metrics` stay per-device (counters of
+   1/0). These three used to inline their own copies, which drifted into real bugs (filters ignored,
+   `healthy` contradicting the counters, permanently-true `global_*` flags); don't reintroduce inline
+   copies. `tests/test_health_endpoints.py` pins the four endpoints' agreement.
 8. **Routes** — Three families:
    - JSON API under `/health*` (`/health`, `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`,
      `/keys`, `/health/cache/invalidate`) — must remain idempotent, JSON-only, no manual trailing-slash
-     redirects (see `app.url_map.strict_slashes = False`). **Only `/health` (and its `/health/` redirect)
-     is unauthenticated** — every other route in this family is decorated with `@login_required` (from
-     `flask_login`), including `/keys`, `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, and
-     `/health/cache/invalidate`.
+     redirects (see `app.url_map.strict_slashes = False`). **The whole family is public** — there is no
+     `login_required` anywhere in `healthcheck.py`. That's the deliberate monitoring-tool contract
+     (Gatus etc.); commit `675775c` restored it after a stint behind auth. The optional
+     `HEALTH_ENDPOINT_TOKEN` setting gates the family behind an `X-Health-Token` header instead, checked
+     by `_health_endpoint_token_ok()` — a logged-in dashboard session also satisfies that check, since
+     the token is a masked secret the frontend never sees.
    - Dashboard UI (`/`, `/dashboard`, `/devices`, `/tailnet-keys`, `/debug`, `/device/<identifier>`)
      rendered via `templates/` + `static/app/` (a Vite/React SPA) — gated behind setup-complete + login
      (see `_gate_dashboard_ui()`), so a request to any of these redirects to `/admin/setup` or
@@ -142,9 +149,9 @@ Key pieces, in the order a change usually touches them:
    page otherwise (`handle_404`).
 9. **Read-only enforcement** — `enforce_read_only_methods()` (a `before_request` hook) rejects non-GET
    methods everywhere except paths under `/admin` (protected by login instead); this is a deliberate design
-   constraint, not an oversight. `/health` staying unauthenticated and GET-only is the load-bearing
-   contract existing monitoring integrations (Gatus, etc.) depend on — don't add auth there. Don't confuse
-   this with the rest of the `/health*` family, which DOES require login (see point 8 above).
+   constraint, not an oversight. The `/health*` family staying unauthenticated and GET-only is the
+   load-bearing contract existing monitoring integrations (Gatus, etc.) depend on — don't add
+   `login_required` there. `HEALTH_ENDPOINT_TOKEN` is the supported way to restrict it (see point 8).
 
 ## Testing conventions
 

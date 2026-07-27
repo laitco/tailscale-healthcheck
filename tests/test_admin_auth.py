@@ -535,3 +535,33 @@ def test_notifications_test_returns_400_on_failure(configured):
         resp = client.post("/admin/api/notifications/test", json={})
         assert resp.status_code == 400
         assert resp.get_json() == {"ok": False, "error": "connection refused"}
+
+
+def test_audit_api_exposes_change_filters(configured):
+    """The audit API must accept changed_field/changes_contains and report a
+    `total` consistent with the filtered page, or the UI paginates a count it
+    can't reach."""
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    with configured.dbstore.get_connection() as conn:
+        configured.dbstore._add_audit(conn, "device", "d1", "updated", {"os": {"old": "linux", "new": "windows"}})
+        configured.dbstore._add_audit(conn, "device", "d2", "updated", {"client_version": {"old": "1", "new": "2"}})
+
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={"username": "admin", "password": "correct-horse-battery-staple"})
+
+    body = client.get("/admin/api/audit?changed_field=os").get_json()
+    assert [e["entity_id"] for e in body["entries"]] == ["d1"]
+    assert body["total"] == 1
+
+    body = client.get("/admin/api/audit?changes_contains=windows").get_json()
+    assert [e["entity_id"] for e in body["entries"]] == ["d1"]
+    assert body["total"] == 1
+
+    # Unknown field yields an empty page, not an error.
+    body = client.get("/admin/api/audit?changed_field=nope").get_json()
+    assert body["entries"] == [] and body["total"] == 0
+
+    # The filter select is populated from the same data.
+    filters = client.get("/admin/api/audit/filters").get_json()
+    assert "os" in filters["changed_fields"]
+    assert "client_version" in filters["changed_fields"]

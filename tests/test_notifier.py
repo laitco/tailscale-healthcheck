@@ -105,7 +105,9 @@ def test_notify_returns_error_on_failure_without_raising(mock_post):
     mock_post.side_effect = Exception("connection refused")
     sent, reason = notifier.notify("device_unhealthy", "t", "b", _cfg())
     assert sent is False
-    assert reason == "connection refused"
+    # Reasons are rendered by sanitize_error(), which prefixes the exception
+    # type so a persisted poller_log line says what kind of failure it was.
+    assert reason == "Exception: connection refused"
 
 
 @patch("notifier.requests.post")
@@ -122,3 +124,46 @@ def test_test_notification_requires_configuration():
     ok, error = notifier.test(_cfg(apprise_api_url=""))
     assert ok is False
     assert error == "not_configured"
+
+
+def test_sanitize_error_strips_url_credentials():
+    """Failure reasons land in dbstore.poller_log and on the /debug page, so a
+    requests exception quoting a credential-bearing URL must not persist those
+    credentials verbatim."""
+    cfg = _cfg(
+        apprise_api_url="http://admin:hunter2@apprise.example.com",
+        apprise_notification_urls="mailto://user:s3cr3t@smtp.example.com",
+        apprise_bearer_token="bearer-token-value",
+    )
+    exc = Exception(
+        "HTTPConnectionPool(host='apprise.example.com'): failed to POST to "
+        "http://admin:hunter2@apprise.example.com/notify with "
+        "mailto://user:s3cr3t@smtp.example.com and bearer-token-value"
+    )
+
+    reason = notifier.sanitize_error(exc, cfg)
+
+    for secret in ("hunter2", "s3cr3t", "bearer-token-value"):
+        assert secret not in reason, f"{secret!r} leaked into {reason!r}"
+    # Host and failure type survive - that's what makes the log actionable.
+    assert "apprise.example.com" in reason
+    assert reason.startswith("Exception: ")
+
+
+def test_sanitize_error_reports_status_code_for_http_errors():
+    cfg = _cfg()
+    exc = Exception("boom")
+    exc.response = Mock(status_code=503)
+
+    assert notifier.sanitize_error(exc, cfg) == "Exception: HTTP 503"
+
+
+@patch("notifier.requests.post")
+def test_notify_failure_reason_is_sanitized(mock_post):
+    cfg = _cfg(apprise_notification_urls="mailto://user:s3cr3t@smtp.example.com")
+    mock_post.side_effect = Exception("could not reach mailto://user:s3cr3t@smtp.example.com")
+
+    sent, reason = notifier.notify("device_unhealthy", "t", "b", cfg)
+
+    assert sent is False
+    assert "s3cr3t" not in reason

@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchAdminStatus, submitSetup, AdminApiError, type AdminStatus } from '@/lib/admin-api'
+import { fetchAdminStatus, submitSetup, errorMessage, type AdminStatus } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
 
 export default function AdminSetupPage() {
   const navigate = useNavigate()
@@ -82,7 +83,7 @@ export default function AdminSetupPage() {
         setStatus(refreshed)
       }
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Setup failed')
+      setError(errorMessage(err, 'Setup failed'))
     } finally {
       setSubmitting(false)
     }
@@ -95,9 +96,9 @@ export default function AdminSetupPage() {
     >
       <form className="space-y-4" onSubmit={onSubmit}>
         {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          <Alert className="p-2 text-xs">
             {error}
-          </div>
+          </Alert>
         )}
 
         {needsConnection && (

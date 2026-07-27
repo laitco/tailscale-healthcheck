@@ -16,6 +16,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useHealthContext } from '@/lib/health-context'
 import { logout, fetchAdminStatus } from '@/lib/admin-api'
 import { cn } from '@/lib/utils'
+import { useNow } from '@/lib/use-now'
+import { relativeTime } from '@/lib/format'
+import { useToast } from '@/lib/toast'
 
 function VersionFooter() {
   const [version, setVersion] = useState<string | null>(null)
@@ -58,8 +61,11 @@ const adminItems = [
 ]
 
 function ConnectionStatus() {
-  const { health } = useHealthContext()
+  const { health, error, loadedAt } = useHealthContext()
   const pollMeta = health?.poll_meta
+  // Re-render on the shared clock so "3m ago" keeps counting up rather than
+  // freezing at whatever it said when the last successful load happened.
+  useNow(30000)
 
   // Reuses the exact same signal the overview page's "can't reach Tailscale"
   // banner is driven by - last_poll_ok/last_poll_auth_error from the
@@ -80,18 +86,33 @@ function ConnectionStatus() {
       : pollMeta.last_poll_error || 'Unable to reach the Tailscale API.'
   }
 
+  // useHealth() deliberately keeps the last good snapshot on screen when a
+  // refresh fails, which otherwise makes a dead backend look like a healthy
+  // tailnet. Say so explicitly, and show how old the data actually is.
+  const stale = Boolean(error) && Boolean(health)
+  if (stale) {
+    dotClass = 'bg-destructive'
+    label = 'Refresh failing'
+    detail = `Showing the last successful snapshot. ${error}`
+  }
+  const age = loadedAt ? relativeTime(new Date(loadedAt).toISOString()) : ''
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground">
           <span className={cn('size-2 shrink-0 rounded-full', dotClass)} aria-hidden="true" />
-          <span className="truncate group-data-[collapsible=icon]:hidden">{label}</span>
+          <span className="truncate group-data-[collapsible=icon]:hidden">
+            {label}
+            {age && <span className="text-muted-foreground/70"> · {age}</span>}
+          </span>
         </div>
       </TooltipTrigger>
       <TooltipContent side="right">
         <div>
           <p className="font-medium">{label}</p>
           <p className="text-background/80">{detail}</p>
+          {age && <p className="text-background/80">Data last updated {age}.</p>}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -101,7 +122,19 @@ function ConnectionStatus() {
 export function AppSidebar() {
   const { refresh, loading } = useHealthContext()
   const navigate = useNavigate()
+  const { notify } = useToast()
   const items = navItems
+
+  // refresh() swallows its own errors so a failed poll trigger still reloads
+  // the snapshot; without this the button gave no feedback at all on failure.
+  async function onRefresh() {
+    try {
+      await refresh()
+      notify('Refreshed.')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Refresh failed', 'error')
+    }
+  }
 
   async function onLogout() {
     try {
@@ -169,7 +202,7 @@ export function AppSidebar() {
       </div>
       <SidebarMenu className="p-2 pt-1">
         <SidebarMenuItem>
-          <SidebarMenuButton onClick={refresh} disabled={loading} tooltip="Refresh">
+          <SidebarMenuButton onClick={onRefresh} disabled={loading} tooltip="Refresh">
             <RefreshCw className={loading ? 'animate-spin' : ''} />
             <span>Refresh</span>
           </SidebarMenuButton>

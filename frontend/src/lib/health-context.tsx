@@ -15,3 +15,14 @@ export function useHealthContext() {
   if (!ctx) throw new Error('useHealthContext must be used within a HealthProvider')
   return ctx
 }
+
+/**
+ * The tailnet's configured timezone, for formatDateTime(). Comes from
+ * /health's poll_meta rather than /admin/api/settings, so non-admin-scoped
+ * pages don't have to pull the entire settings payload to format a date.
+ * Undefined until the first successful health load; formatDateTime() falls
+ * back to browser-local until then.
+ */
+export function useTimezone(): string | undefined {
+  return useHealthContext().health?.poll_meta?.timezone
+}

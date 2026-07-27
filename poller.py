@@ -13,7 +13,7 @@ import fcntl
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -31,7 +31,7 @@ EVENT_TYPES = (
     "poll_skipped", "poll_started",
     "devices_success", "devices_error",
     "keys_success", "keys_error",
-    "notification_sent", "notification_failed",
+    "notification_sent", "notification_failed", "notification_suppressed",
     "poll_completed",
 )
 
@@ -107,18 +107,67 @@ def _record_notification(event_type: str, target: str, sent: bool, reason: str):
         )
 
 
+def _cooldown_minutes(cfg: dict) -> int:
+    try:
+        return max(0, int(cfg.get("notification_cooldown_minutes") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _in_cooldown(last_notified_iso: str, cooldown_minutes: int) -> bool:
+    """True if `last_notified_iso` is recent enough that another notification
+    for the same (event, entity) should be suppressed."""
+    if not cooldown_minutes or not last_notified_iso:
+        return False
+    try:
+        last = datetime.fromisoformat(last_notified_iso)
+    except (TypeError, ValueError):
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last) < timedelta(minutes=cooldown_minutes)
+
+
+def _notify_entity(event_type, entity_id, target, title, body, cfg, cooldown_state, device_tags=None):
+    """Send one entity-scoped notification, honouring notification_cooldown_minutes.
+
+    Notifications already only fire on a state *transition*, but a device
+    flapping across the healthy line still produces one alert per flap. The
+    cooldown collapses those into at most one per window per (event, entity).
+    Suppressions are recorded as their own poller_log event so /debug explains
+    the silence rather than looking like the notifier simply stopped working.
+    """
+    cooldown_minutes = _cooldown_minutes(cfg)
+    if _in_cooldown(cooldown_state.get(entity_id), cooldown_minutes):
+        _record(
+            "notification_suppressed",
+            f"Suppressed '{event_type}' for {target} (within {cooldown_minutes}m cooldown).",
+            {"event_type": event_type, "cooldown_minutes": cooldown_minutes},
+        )
+        return
+    sent, reason = notifier.notify(event_type, title, body, cfg, device_tags=device_tags)
+    _record_notification(event_type, target, sent, reason)
+    if sent and cooldown_minutes:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        dbstore.set_last_notified(event_type, entity_id, now_iso)
+        cooldown_state[entity_id] = now_iso
+
+
 def _process_device_notifications(cfg: dict, health_status: list):
     """Fire device_unhealthy/device_healthy_again on a healthy-state
     transition, comparing against the previous poll cycle's stored state -
     never on a device's first-ever appearance (that would spam every device
     at rollout/first run)."""
     old_state = dbstore.get_health_state("device")
-    seen_ids = set()
+    cooldowns = {
+        "device_unhealthy": dbstore.get_last_notified("device_unhealthy"),
+        "device_healthy_again": dbstore.get_last_notified("device_healthy_again"),
+    }
+    new_states = {}
     for d in health_status:
         device_id = d.get("id")
         if not device_id:
             continue
-        seen_ids.add(device_id)
         name = d.get("machineName") or d.get("device") or device_id
         new_healthy = bool(d.get("healthy"))
         old_healthy = old_state.get(device_id)
@@ -126,10 +175,10 @@ def _process_device_notifications(cfg: dict, health_status: list):
             event = "device_healthy_again" if new_healthy else "device_unhealthy"
             title = f"{name} is {'healthy again' if new_healthy else 'unhealthy'}"
             body = f"Device {d.get('device', name)} transitioned to {'healthy' if new_healthy else 'unhealthy'}."
-            sent, reason = notifier.notify(event, title, body, cfg, device_tags=d.get("tags"))
-            _record_notification(event, name, sent, reason)
-        dbstore.set_health_state("device", device_id, new_healthy)
-    dbstore.prune_health_state("device", seen_ids)
+            _notify_entity(event, device_id, name, title, body, cfg, cooldowns[event], device_tags=d.get("tags"))
+        new_states[device_id] = new_healthy
+    dbstore.set_health_state_bulk("device", new_states)
+    dbstore.prune_health_state("device", new_states.keys())
 
 
 def _process_lock_notifications(cfg: dict, health_status: list):
@@ -139,12 +188,15 @@ def _process_lock_notifications(cfg: dict, health_status: list):
     if not cfg.get("tailnet_lock_enabled"):
         return
     old_state = dbstore.get_health_state("device_lock")
-    seen_ids = set()
+    cooldowns = {
+        "device_needs_signing": dbstore.get_last_notified("device_needs_signing"),
+        "device_signed": dbstore.get_last_notified("device_signed"),
+    }
+    new_states = {}
     for d in health_status:
         device_id = d.get("id")
         if not device_id:
             continue
-        seen_ids.add(device_id)
         name = d.get("machineName") or d.get("device") or device_id
         signed = not d.get("tailnetLockError")
         old_signed = old_state.get(device_id)
@@ -156,10 +208,10 @@ def _process_lock_notifications(cfg: dict, health_status: list):
                 if signed
                 else f"Device {d.get('device', name)} needs a Tailnet Lock signature: {d.get('tailnetLockError', '')}"
             )
-            sent, reason = notifier.notify(event, title, body, cfg, device_tags=d.get("tags"))
-            _record_notification(event, name, sent, reason)
-        dbstore.set_health_state("device_lock", device_id, signed)
-    dbstore.prune_health_state("device_lock", seen_ids)
+            _notify_entity(event, device_id, name, title, body, cfg, cooldowns[event], device_tags=d.get("tags"))
+        new_states[device_id] = signed
+    dbstore.set_health_state_bulk("device_lock", new_states)
+    dbstore.prune_health_state("device_lock", new_states.keys())
 
 
 def _process_key_notifications(cfg: dict, key_status: list):
@@ -167,21 +219,23 @@ def _process_key_notifications(cfg: dict, key_status: list):
     soon). There's no "key healthy again" event - a renewed/replaced key
     just stops being interesting."""
     old_state = dbstore.get_health_state("key")
-    seen_ids = set()
+    key_cooldown = dbstore.get_last_notified("key_expiring")
+    new_states = {}
     for k in key_status:
         key_id = k.get("id")
         if not key_id:
             continue
-        seen_ids.add(key_id)
         new_healthy = bool(k.get("key_healthy"))
         old_healthy = old_state.get(key_id)
         if old_healthy is True and new_healthy is False:
             title = f"Tailnet key '{k.get('description') or key_id}' is expiring soon"
             body = f"Key expires in {k.get('key_days_to_expire')} day(s)."
-            sent, reason = notifier.notify("key_expiring", title, body, cfg)
-            _record_notification("key_expiring", k.get("description") or key_id, sent, reason)
-        dbstore.set_health_state("key", key_id, new_healthy)
-    dbstore.prune_health_state("key", seen_ids)
+            _notify_entity(
+                "key_expiring", key_id, k.get("description") or key_id, title, body, cfg, key_cooldown,
+            )
+        new_states[key_id] = new_healthy
+    dbstore.set_health_state_bulk("key", new_states)
+    dbstore.prune_health_state("key", new_states.keys())
 
 
 def _process_global_notifications(cfg: dict, health_metrics: dict):
@@ -192,9 +246,48 @@ def _process_global_notifications(cfg: dict, health_metrics: dict):
         event = "global_healthy_restored" if new_healthy else "global_unhealthy"
         title = "Tailnet is healthy again" if new_healthy else "Tailnet is unhealthy"
         body = f"{health_metrics.get('counter_healthy_false', 0)} device(s) currently unhealthy."
-        sent, reason = notifier.notify(event, title, body, cfg)
-        _record_notification(event, "tailnet", sent, reason)
+        _notify_entity(event, "tailnet", "tailnet", title, body, cfg, dbstore.get_last_notified(event))
     dbstore.set_health_state("global", "tailnet", new_healthy)
+
+
+def _needs_oauth_refresh(healthcheck, current_client_id) -> bool:
+    """Whether this process should fetch a fresh OAuth token before polling.
+
+    ACCESS_TOKEN and its renewal timer are per-process globals, so there are
+    three distinct staleness cases:
+
+    1. No token at all - e.g. OAuth creds became configured via the settings
+       UI while a still-working static token meant no 401 ever occurred to
+       trigger the usual retry-driven fetch.
+    2. A token for a DIFFERENT client id - creds were replaced (new client
+       id/secret) while a cached token from the OLD client is still truthy.
+       Without comparing the client id, that stale token for a possibly-now-
+       wrong tailnet would keep being used until it happened to expire or get
+       a 401, which a wrong-but-still-valid-elsewhere token might never do.
+    3. A token with no live renewal timer. Threads do not survive fork, so a
+       worker that inherited a valid ACCESS_TOKEN from the preloaded master
+       (see the --preload flag in the Dockerfile) has no 50-minute renewal
+       running of its own - only the master does, and the master serves no
+       requests. Without this case the polling worker would coast on the
+       inherited token until it expired and a 401 forced a refresh; correct,
+       but reactive. Fetching once here re-establishes a live timer in the
+       process that actually polls, so renewals stay ahead of expiry.
+
+    Case 3 is self-limiting: fetch_oauth_token() starts a new timer on
+    success, so the very next cycle sees a live one and skips. If the fetch
+    fails it leaves no timer and no token, and the retry on the next cycle is
+    exactly what's wanted.
+    """
+    if not current_client_id or not dbstore.get_setting("oauth_client_secret"):
+        return False  # not an OAuth install; a static token needs no refresh
+    if not getattr(healthcheck, "ACCESS_TOKEN", None):
+        return True
+    if getattr(healthcheck, "ACCESS_TOKEN_CLIENT_ID", None) != current_client_id:
+        return True
+    renewal_timer = getattr(healthcheck, "TOKEN_RENEWAL_TIMER", None)
+    # is_alive() is False for a timer inherited across fork: CPython's
+    # threading._after_fork() marks every thread but the current one stopped.
+    return renewal_timer is None or not renewal_timer.is_alive()
 
 
 def run_poll_cycle():
@@ -215,22 +308,8 @@ def run_poll_cycle():
     _record("poll_started", "Poll cycle starting.")
     import healthcheck  # deferred: avoids circular import at module load time
 
-    have_access_token = getattr(healthcheck, "ACCESS_TOKEN", None)
-    cached_client_id = getattr(healthcheck, "ACCESS_TOKEN_CLIENT_ID", None)
     current_client_id = dbstore.get_setting("oauth_client_id")
-    oauth_configured = current_client_id and dbstore.get_setting("oauth_client_secret")
-    if oauth_configured and (not have_access_token or cached_client_id != current_client_id):
-        # ACCESS_TOKEN is per-process; two distinct staleness cases both need
-        # this: (1) OAuth creds became configured via the settings UI while
-        # a still-working static token meant no 401 ever occurred to trigger
-        # the usual retry-driven fetch, and (2) OAuth creds were REPLACED
-        # (new client id/secret) while a cached token from the OLD client is
-        # still truthy - without comparing the client id, that stale token
-        # for a possibly-now-wrong tailnet/client would just keep being used
-        # until it happens to expire or get a 401 (which a wrong-but-still-
-        # valid-elsewhere token might never do). This runs in the one
-        # process that actually owns polling, so it's process-correct
-        # regardless of which worker persisted the setting.
+    if _needs_oauth_refresh(healthcheck, current_client_id):
         healthcheck.fetch_oauth_token()
 
     tailnet_domain = dbstore.get_setting("tailnet_domain")
@@ -275,11 +354,11 @@ def run_poll_cycle():
 
     notify_cfg = dbstore.get_settings_typed(notifier.NOTIFICATION_SETTINGS + ("tailnet_lock_enabled",))
     if cycle_auth_error and not was_auth_error:
-        sent, reason = notifier.notify(
-            "poll_auth_error", "Tailscale authentication failing",
-            f"The last poll cycle failed with an authentication error: {cycle_error}", notify_cfg,
+        _notify_entity(
+            "poll_auth_error", "poller", "poller", "Tailscale authentication failing",
+            f"The last poll cycle failed with an authentication error: {cycle_error}",
+            notify_cfg, dbstore.get_last_notified("poll_auth_error"),
         )
-        _record_notification("poll_auth_error", "poller", sent, reason)
 
     try:
         health_status, health_metrics = healthcheck._compute_health_summary(dbstore.get_devices_snapshot())
@@ -297,6 +376,8 @@ def run_poll_cycle():
     dbstore.set_poll_meta(now_iso)
     dbstore.purge_audit_log()
     dbstore.purge_poller_log()
+    dbstore.purge_notification_state()
+    dbstore.purge_login_rate_limit()
     duration_ms = round((time.monotonic() - cycle_start) * 1000, 1)
     _record(
         "poll_completed", f"Poll cycle complete in {duration_ms}ms.",

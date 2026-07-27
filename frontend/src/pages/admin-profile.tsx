@@ -9,16 +9,17 @@ import {
   enrollMfa,
   confirmMfa,
   disableMfa,
-  AdminApiError,
+  errorMessage,
   type ProfileResponse,
 } from '@/lib/admin-api'
+import { Alert } from '@/components/ui/alert'
 
 function ErrorBox({ message }: { message: string | null }) {
   if (!message) return null
   return (
-    <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+    <Alert className="p-2 text-xs">
       {message}
-    </div>
+    </Alert>
   )
 }
 
@@ -46,7 +47,7 @@ function ChangePasswordCard() {
       setConfirmPassword('')
       setSuccess(true)
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Failed to change password')
+      setError(errorMessage(err, 'Failed to change password'))
     } finally {
       setSubmitting(false)
     }
@@ -132,7 +133,7 @@ function MfaCard({ profile, onChanged }: { profile: ProfileResponse; onChanged: 
     try {
       setEnroll(await enrollMfa())
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Failed to start MFA enrollment')
+      setError(errorMessage(err, 'Failed to start MFA enrollment'))
     } finally {
       setSubmitting(false)
     }
@@ -148,7 +149,7 @@ function MfaCard({ profile, onChanged }: { profile: ProfileResponse; onChanged: 
       setEnroll(null)
       setConfirmCode('')
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Invalid verification code')
+      setError(errorMessage(err, 'Invalid verification code'))
     } finally {
       setSubmitting(false)
     }
@@ -163,7 +164,7 @@ function MfaCard({ profile, onChanged }: { profile: ProfileResponse; onChanged: 
       setDisableCode('')
       onChanged()
     } catch (err) {
-      setError(err instanceof AdminApiError ? err.message : 'Failed to disable MFA')
+      setError(errorMessage(err, 'Failed to disable MFA'))
     } finally {
       setSubmitting(false)
     }

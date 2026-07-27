@@ -6,7 +6,7 @@
     <title>{% block title %}Tailscale Healthcheck{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='app/favicon.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='app/app.css') }}">
-    <script>
+    <script nonce="{{ csp_nonce }}">
       (function () {
         var mql = window.matchMedia('(prefers-color-scheme: dark)');
         document.documentElement.classList.toggle('dark', mql.matches);
