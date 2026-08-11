@@ -19,6 +19,7 @@ import requests
 
 import dbstore
 import notifier
+import public_ip_updater
 
 _lock_fh = None
 _timer = None
@@ -31,11 +32,12 @@ EVENT_TYPES = (
     "poll_skipped", "poll_started",
     "devices_success", "devices_error",
     "keys_success", "keys_error",
+    "public_ip_unchanged", "public_ip_updated", "public_ip_error",
     "notification_sent", "notification_failed", "notification_suppressed",
     "poll_completed",
 )
 
-_ERROR_EVENT_TYPES = {"devices_error", "keys_error", "notification_failed"}
+_ERROR_EVENT_TYPES = {"devices_error", "keys_error", "notification_failed", "public_ip_error"}
 
 
 def _record(event_type: str, message: str, detail: dict = None):
@@ -95,6 +97,35 @@ def poll_interval_seconds() -> int:
         return max(5, int(dbstore.get_setting_typed("poll_interval_seconds")))
     except (TypeError, ValueError):
         return 60
+
+
+def run_public_ip_sync(mapping_id: int = None, actor: str = "poller"):
+    """Run all enabled mappings or one selected mapping under a cross-worker lock."""
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return {"ok": False, "busy": True, "message": "A public-IP sync is already in progress."}
+    try:
+        if mapping_id is None:
+            mappings = dbstore.list_public_ip_mappings(enabled_only=True)
+        else:
+            mapping = dbstore.get_public_ip_mapping(mapping_id)
+            if mapping is None:
+                return {"ok": False, "not_found": True, "error": "Mapping not found"}
+            mappings = [mapping]
+        import healthcheck
+        current_client_id = dbstore.get_setting("oauth_client_id")
+        if _needs_oauth_refresh(healthcheck, current_client_id):
+            healthcheck.fetch_oauth_token()
+        return public_ip_updater.sync(
+            mappings,
+            dbstore.get_setting("tailnet_domain"),
+            healthcheck.build_auth_header(),
+            healthcheck.get_http_timeout(),
+            actor=actor,
+            record=_record,
+        )
+    finally:
+        public_ip_updater.release_lock(lock)
 
 
 def _record_notification(event_type: str, target: str, sent: bool, reason: str):
@@ -348,6 +379,9 @@ def run_poll_cycle():
         cycle_error = cycle_error or str(e)
         cycle_auth_error = cycle_auth_error or _is_auth_error(e)
         _record("keys_error", f"Failed to fetch/store tailnet keys: {e}", {"error": str(e), "auth_error": _is_auth_error(e)})
+
+    if dbstore.get_setting_typed("public_ip_updater_enabled"):
+        run_public_ip_sync(actor="poller")
 
     was_auth_error = bool(previous_poll_status.get("auth_error"))
     dbstore.set_poll_status(ok=cycle_error is None, error=cycle_error, auth_error=cycle_auth_error)

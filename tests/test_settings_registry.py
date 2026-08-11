@@ -133,6 +133,7 @@ def test_metrics_history_record_and_purge(tmp_path):
         "counter_healthy_online_true": 6, "counter_healthy_online_false": 0,
         "counter_key_healthy_true": 5, "counter_key_healthy_false": 1,
         "counter_update_healthy_true": 4, "counter_update_healthy_false": 2,
+        "counter_public_ip_mapping_healthy": 2, "counter_public_ip_mapping_error": 1,
     }
     keys_metrics = {"counter_key_healthy_true": 3, "counter_key_healthy_false": 0}
 
@@ -141,6 +142,8 @@ def test_metrics_history_record_and_purge(tmp_path):
     assert len(history) == 1
     assert history[0]["counter_healthy_true"] == 5
     assert history[0]["keys_counter_healthy_true"] == 3
+    assert history[0]["public_ip_mapping_healthy"] == 2
+    assert history[0]["public_ip_mapping_error"] == 1
 
     with dbstore.get_connection() as conn:
         conn.execute("UPDATE metrics_history SET occurred_at = '2000-01-01T00:00:00+00:00'")

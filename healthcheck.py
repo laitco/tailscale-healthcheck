@@ -765,6 +765,7 @@ HEALTH_SUMMARY_SETTINGS = (
     "global_healthy_threshold", "global_key_healthy_threshold",
     "global_online_healthy_threshold", "global_update_healthy_threshold",
     "tailnet_lock_enabled", "global_lock_healthy_threshold", "lock_signer_tags",
+    "public_ip_updater_enabled", "public_ip_errors_affect_health",
     "include_os", "exclude_os", "include_identifier", "exclude_identifier",
     "include_tags", "exclude_tags",
     "include_identifier_update_healthy", "exclude_identifier_update_healthy",
@@ -881,6 +882,15 @@ def _compute_health_summary(devices):
             health_info["keyExpiryTimestamp"] = expires.isoformat() if expires else None
         health_status.append(health_info)
 
+    public_ip_mappings = dbstore.list_public_ip_mappings(enabled_only=True) if cfg["public_ip_updater_enabled"] else []
+    public_ip_errors = sum(1 for mapping in public_ip_mappings if mapping["status"] == "error")
+    public_ip_pending = sum(1 for mapping in public_ip_mappings if mapping["status"] == "pending")
+    public_ip_healthy = public_ip_errors == 0
+    device_global_healthy = counter_healthy_false <= cfg["global_healthy_threshold"]
+    overall_healthy = device_global_healthy
+    if cfg["public_ip_updater_enabled"] and cfg["public_ip_errors_affect_health"]:
+        overall_healthy = overall_healthy and public_ip_healthy
+
     metrics = {
         "counter_healthy_true": counter_healthy_true,
         "counter_healthy_false": counter_healthy_false,
@@ -892,11 +902,19 @@ def _compute_health_summary(devices):
         "counter_update_healthy_false": counter_update_healthy_false,
         "counter_lock_healthy_true": counter_lock_healthy_true,
         "counter_lock_healthy_false": counter_lock_healthy_false,
-        "global_healthy": counter_healthy_false <= cfg["global_healthy_threshold"],
+        "global_healthy": overall_healthy,
+        "device_global_healthy": device_global_healthy,
         "global_key_healthy": counter_key_healthy_false <= cfg["global_key_healthy_threshold"],
         "global_online_healthy": counter_healthy_online_false <= cfg["global_online_healthy_threshold"],
         "global_update_healthy": counter_update_healthy_false <= cfg["global_update_healthy_threshold"],
         "global_lock_healthy": counter_lock_healthy_false <= cfg["global_lock_healthy_threshold"],
+        "public_ip_updater_enabled": cfg["public_ip_updater_enabled"],
+        "public_ip_updater_healthy": public_ip_healthy,
+        "public_ip_updater_affects_health": cfg["public_ip_errors_affect_health"],
+        "counter_public_ip_mapping_healthy": sum(1 for mapping in public_ip_mappings if mapping["status"] == "healthy"),
+        "counter_public_ip_mapping_error": public_ip_errors,
+        "counter_public_ip_mapping_pending": public_ip_pending,
+        "total_public_ip_mappings": len(public_ip_mappings),
     }
     return health_status, metrics
 
@@ -1194,6 +1212,53 @@ def keys_status():
     except Exception as e:
         logging.error(f"Error in keys_status: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/public-ip', methods=['GET'])
+@_apply_limits
+def public_ip_status():
+    """Return DynDNS posture-mapping status for monitoring integrations."""
+    if not _health_endpoint_token_ok():
+        return jsonify({"error": "Unauthorized"}), 401
+    cfg = dbstore.get_settings_typed((
+        "public_ip_updater_enabled", "public_ip_errors_affect_health",
+    ))
+    stored = dbstore.list_public_ip_mappings()
+    mappings = []
+    for mapping in stored:
+        enabled = bool(mapping["enabled"])
+        mappings.append({
+            "id": mapping["id"],
+            "hostname": mapping["hostname"],
+            "posture_name": mapping["posture_name"],
+            "enabled": enabled,
+            "status": mapping["status"],
+            "healthy": None if not enabled else mapping["status"] != "error",
+            "resolved_ip": mapping["resolved_ip"],
+            "configured_ip": mapping["configured_ip"],
+            "last_checked_at": mapping["last_checked_at"],
+            "last_success_at": mapping["last_success_at"],
+            "last_changed_at": mapping["last_changed_at"],
+            "last_error": mapping["last_error"],
+        })
+    enabled_mappings = [mapping for mapping in mappings if mapping["enabled"]]
+    error_count = sum(1 for mapping in enabled_mappings if mapping["status"] == "error")
+    healthy_count = sum(1 for mapping in enabled_mappings if mapping["status"] == "healthy")
+    pending_count = sum(1 for mapping in enabled_mappings if mapping["status"] == "pending")
+    return jsonify({
+        "mappings": mappings,
+        "metrics": {
+            "updater_enabled": cfg["public_ip_updater_enabled"],
+            "errors_affect_health": cfg["public_ip_errors_affect_health"],
+            "global_public_ip_healthy": error_count == 0,
+            "total_mappings": len(stored),
+            "enabled_mappings": len(enabled_mappings),
+            "counter_mapping_healthy": healthy_count,
+            "counter_mapping_error": error_count,
+            "counter_mapping_pending": pending_count,
+        },
+        "poll_meta": _build_poll_meta(),
+    })
 
 @app.route('/health/', methods=['GET'])
 @_apply_limits

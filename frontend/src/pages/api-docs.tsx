@@ -151,6 +151,43 @@ const ENDPOINTS: EndpointDef[] = [
   },
   {
     method: 'GET',
+    path: '/public-ip',
+    group: 'Public IP',
+    description: 'DynDNS posture-mapping health, resolved and configured addresses, timestamps, and aggregate status.',
+    authNote:
+      'Unauthenticated by default. If HEALTH_ENDPOINT_TOKEN is configured, requests must include an X-Health-Token header matching it.',
+    example: {
+      mappings: [
+        {
+          id: 1,
+          hostname: 'home.example.net',
+          posture_name: 'posture:Home',
+          enabled: true,
+          status: 'healthy',
+          healthy: true,
+          resolved_ip: '203.0.113.10',
+          configured_ip: '203.0.113.10',
+          last_checked_at: '2026-08-11T20:15:00Z',
+          last_success_at: '2026-08-11T20:15:00Z',
+          last_changed_at: '2026-08-10T08:30:00Z',
+          last_error: null,
+        },
+      ],
+      metrics: {
+        updater_enabled: true,
+        errors_affect_health: true,
+        global_public_ip_healthy: true,
+        total_mappings: 1,
+        enabled_mappings: 1,
+        counter_mapping_healthy: 1,
+        counter_mapping_error: 0,
+        counter_mapping_pending: 0,
+      },
+      poll_meta: { last_polled_at: '2026-08-11T20:15:00Z', poll_interval_seconds: 60 },
+    },
+  },
+  {
+    method: 'GET',
     path: '/health/cache/invalidate',
     group: 'Operations',
     description: 'Clears the response cache and triggers an immediate poll of the Tailscale API.',
@@ -170,7 +207,7 @@ interface TryState {
 
 // Only /health (and its trailing-slash form /health/) is ever unauthenticated by
 // default, so it's the only endpoint the health-endpoint-token field applies to.
-const HEALTH_TOKEN_ENDPOINTS = new Set(['/health'])
+const HEALTH_TOKEN_ENDPOINTS = new Set(['/health', '/public-ip'])
 
 export default function ApiDocsPage() {
   const [baseUrl, setBaseUrl] = useState<string | null>(null)

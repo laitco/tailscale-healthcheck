@@ -50,6 +50,14 @@ export interface HealthMetrics {
   global_key_healthy: boolean
   global_update_healthy: boolean
   global_lock_healthy: boolean
+  device_global_healthy: boolean
+  public_ip_updater_enabled: boolean
+  public_ip_updater_healthy: boolean
+  public_ip_updater_affects_health: boolean
+  counter_public_ip_mapping_healthy: number
+  counter_public_ip_mapping_error: number
+  counter_public_ip_mapping_pending: number
+  total_public_ip_mappings: number
   counter_healthy_online_true: number
   counter_healthy_online_false: number
   counter_key_healthy_true: number

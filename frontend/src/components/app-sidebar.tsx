@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, Laptop, KeyRound, Bug, Network, RefreshCw, Settings, Users, ScrollText, LogOut, BookOpen, UserCircle } from 'lucide-react'
+import { LayoutDashboard, Laptop, KeyRound, Bug, Network, RefreshCw, Settings, Users, ScrollText, LogOut, BookOpen, UserCircle, Globe2 } from 'lucide-react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Sidebar,
@@ -54,6 +54,7 @@ const navItems = [
 ]
 
 const adminItems = [
+  { to: '/admin/public-ip', label: 'Public IP', icon: Globe2 },
   { to: '/admin/settings', label: 'Settings', icon: Settings },
   { to: '/admin/users', label: 'Users', icon: Users },
   { to: '/admin/audit', label: 'Audit Log', icon: ScrollText },

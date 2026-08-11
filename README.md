@@ -56,7 +56,7 @@
 
 ## ✨ Description
 
-A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
+A Tailscale monitoring and administration application with a React dashboard, health APIs, background polling, audit history, alerting, and policy automation. It tracks device and key health, exposes monitoring-friendly endpoints, and provides authenticated tools for operating a tailnet. The backend is implemented with Python and Flask.
 
 > Release notes have moved to the [GitHub Releases page](https://github.com/laitco/tailscale-healthcheck/releases).
 
@@ -103,6 +103,10 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Debug page (`/debug`) showing the background poller's recent activity log (persisted, not in-memory), filterable by event type
   - A visible banner on the dashboard and settings page when the poller can't reach the Tailscale API, calling out auth-credential problems specifically
   - User profile page (`/admin/profile`): change password, and enroll/disable TOTP-based two-factor authentication (with one-time recovery codes shown on enrollment); MFA-enabled accounts get a second login step
+- **DynDNS Public-IP Posture Automation**:
+  - Manage multiple DynDNS hostname → `ip:publicAddress` posture-rule mappings from `/admin/public-ip`
+  - Atomic HuJSON validation and ETag-protected policy updates with local policy backups
+  - Per-mapping status and manual synchronization, with optional inclusion in overall health
 - **Tailnet Key Filters**: `INCLUDE_KEY_TYPE`/`EXCLUDE_KEY_TYPE`/`INCLUDE_KEY_DESCRIPTION`/`EXCLUDE_KEY_DESCRIPTION` narrow which tailnet API/auth keys are reported, mirroring the device filters below.
 
 ## 📡 Endpoints
@@ -243,6 +247,9 @@ The application is configured using environment variables:
 | `POLL_INTERVAL_SECONDS` | `60`           | How often the background poller refreshes devices/tailnet keys from the Tailscale API into SQLite. |
 | `AUDIT_RETENTION_DAYS` | `14`            | How long audit log entries are kept before being purged. Also editable via `/admin/settings`. |
 | `POLLER_LOG_RETENTION_DAYS` | `7`         | How long the poller's operational activity log (shown on `/debug`) is kept before being purged. Also editable via `/admin/settings`. |
+| `PUBLIC_IP_UPDATER_ENABLED` | `NO`        | Enable scheduled synchronization of mappings configured on `/admin/public-ip`. |
+| `PUBLIC_IP_BACKUP_RETENTION_DAYS` | `30`  | Retain updater-created HuJSON policy backups for this many days under the database directory. |
+| `PUBLIC_IP_ERRORS_AFFECT_HEALTH` | `NO`   | Make an enabled mapping's latest synchronization error affect `global_healthy`. |
 | `HEALTH_ENDPOINT_TOKEN` | `""` (disabled) | Optional shared secret guarding the public `/health` endpoint. When set, requests must include a matching `X-Health-Token` header or get `401`. Also editable via `/admin/settings`. |
 | `TRUSTED_PROXY_COUNT` | `0`              | Number of reverse proxies in front of the app. `0` trusts nothing and uses the direct peer address; set it to your real proxy count (usually `1`) so per-IP rate limits and the failed-login lockout key off the actual client. Needs a restart. See [Security](#security). |
 | `SESSION_COOKIE_SECURE` | `NO`           | Add the `Secure` flag to the admin session cookie. Set `YES` when serving over HTTPS. Needs a restart. |

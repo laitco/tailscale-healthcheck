@@ -205,3 +205,38 @@ def test_identifier_metrics_stay_scoped_to_the_single_device(tailnet):
     assert metrics["counter_healthy_true"] == 0
     assert metrics["counter_healthy_false"] == 1
     assert metrics["counter_healthy_online_false"] == 1
+
+
+def test_public_ip_mapping_error_optionally_affects_overall_health(tmp_path):
+    m = _load_healthcheck(tmp_path / "public-ip.db")
+    m.fetch_devices = lambda: [_device("d1", "alpha")]
+    mapping = m.dbstore.create_public_ip_mapping("home.example.net", "posture:Home")
+    m.dbstore.set_public_ip_mapping_result(mapping["id"], status="error", error="DNS failed")
+    m.dbstore.set_setting("public_ip_updater_enabled", "YES")
+
+    metrics = _json(m.app.test_client(), "/health")["metrics"]
+    assert metrics["public_ip_updater_healthy"] is False
+    assert metrics["global_healthy"] is True  # backward-compatible default
+
+    m.dbstore.set_setting("public_ip_errors_affect_health", "YES")
+    metrics = _json(m.app.test_client(), "/health")["metrics"]
+    assert metrics["global_healthy"] is False
+    assert metrics["counter_public_ip_mapping_error"] == 1
+
+
+def test_public_ip_status_endpoint_reports_mappings_and_metrics(tmp_path):
+    m = _load_healthcheck(tmp_path / "public-ip-api.db")
+    mapping = m.dbstore.create_public_ip_mapping("home.example.net", "posture:Home")
+    m.dbstore.set_public_ip_mapping_result(
+        mapping["id"], status="healthy", resolved_ip="8.8.8.8",
+        configured_ip="8.8.8.8", success=True,
+    )
+    m.dbstore.set_setting("public_ip_updater_enabled", "YES")
+
+    response = m.app.test_client().get("/public-ip")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["mappings"][0]["posture_name"] == "posture:Home"
+    assert body["mappings"][0]["healthy"] is True
+    assert body["metrics"]["global_public_ip_healthy"] is True
+    assert body["metrics"]["counter_mapping_healthy"] == 1

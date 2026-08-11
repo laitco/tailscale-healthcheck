@@ -114,6 +114,52 @@ export function pollNow(): Promise<{ ok: boolean; last_polled_at: string | null 
   return request('/admin/api/poll-now', { method: 'POST' })
 }
 
+export type PublicIpMapping = {
+  id: number
+  hostname: string
+  posture_name: string
+  enabled: boolean
+  status: 'pending' | 'healthy' | 'error'
+  last_checked_at: string | null
+  last_success_at: string | null
+  last_changed_at: string | null
+  resolved_ip: string | null
+  configured_ip: string | null
+  last_error: string | null
+  last_backup: string | null
+}
+
+export type PublicIpStatus = {
+  settings: {
+    public_ip_updater_enabled: boolean
+    public_ip_backup_retention_days: number
+    public_ip_errors_affect_health: boolean
+    poll_interval_seconds: number
+  }
+  mappings: PublicIpMapping[]
+}
+
+export function fetchPublicIpStatus(): Promise<PublicIpStatus> {
+  return request('/admin/api/public-ip')
+}
+
+export function createPublicIpMapping(payload: { hostname: string; posture_name: string; enabled: boolean }) {
+  return request('/admin/api/public-ip/mappings', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function updatePublicIpMapping(id: number, payload: { hostname: string; posture_name: string; enabled: boolean }) {
+  return request(`/admin/api/public-ip/mappings/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function deletePublicIpMapping(id: number) {
+  return request(`/admin/api/public-ip/mappings/${id}`, { method: 'DELETE' })
+}
+
+export function syncPublicIp(id?: number): Promise<{ ok: boolean; changed: number; message?: string; error?: string }> {
+  const path = id == null ? '/admin/api/public-ip/sync' : `/admin/api/public-ip/mappings/${id}/sync`
+  return request(path, { method: 'POST' })
+}
+
 export function testNotification(overrides: Record<string, string>): Promise<{ ok: true }> {
   return request('/admin/api/notifications/test', { method: 'POST', body: JSON.stringify(overrides) })
 }
@@ -184,6 +230,8 @@ export type MetricsHistoryEntry = {
   counter_update_healthy_false: number
   keys_counter_healthy_true: number
   keys_counter_healthy_false: number
+  public_ip_mapping_healthy: number
+  public_ip_mapping_error: number
 }
 
 export function fetchMetricsHistory(hours = 24): Promise<{ entries: MetricsHistoryEntry[] }> {

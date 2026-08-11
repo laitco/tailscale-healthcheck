@@ -86,12 +86,23 @@ export default function OverviewPage() {
           </Button>
         </Alert>
       )}
+      {metrics.public_ip_updater_enabled && !metrics.public_ip_updater_healthy && (
+        <Alert className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-medium">Public-IP posture synchronization failing</p>
+            <p className="text-xs text-destructive/90">
+              {metrics.counter_public_ip_mapping_error} enabled mapping{metrics.counter_public_ip_mapping_error === 1 ? '' : 's'} need attention.
+            </p>
+          </div>
+          <Button asChild variant="outline" size="sm"><Link to="/admin/public-ip">Review mappings</Link></Button>
+        </Alert>
+      )}
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         <MetricCard
           title="Overall Health"
           value={metrics.global_healthy ? 'Healthy' : 'Issues'}
-          subtitle={`${metrics.counter_healthy_false} issue${metrics.counter_healthy_false === 1 ? '' : 's'} · trend below`}
+          subtitle={`${metrics.counter_healthy_false} device issue${metrics.counter_healthy_false === 1 ? '' : 's'}${metrics.counter_public_ip_mapping_error ? ` · ${metrics.counter_public_ip_mapping_error} public-IP issue${metrics.counter_public_ip_mapping_error === 1 ? '' : 's'}` : ''} · trend below`}
           ok={metrics.global_healthy}
           // Plot the positive (healthy) count, same convention as every
           // other tile below (up = good) - keeps all trend charts reading
@@ -145,6 +156,29 @@ export default function OverviewPage() {
             trendTimezone={timezone}
           />
         )}
+        <MetricCard
+          title="DynDNS Posture Health"
+          value={
+            !metrics.public_ip_updater_enabled
+              ? 'Disabled'
+              : metrics.total_public_ip_mappings === 0
+                ? 'Not Configured'
+                : `${metrics.counter_public_ip_mapping_healthy} / ${metrics.total_public_ip_mappings}`
+          }
+          subtitle={
+            !metrics.public_ip_updater_enabled
+              ? 'Enable in Settings'
+              : metrics.counter_public_ip_mapping_error
+                ? `${metrics.counter_public_ip_mapping_error} synchronization error${metrics.counter_public_ip_mapping_error === 1 ? '' : 's'}`
+                : metrics.counter_public_ip_mapping_pending
+                  ? `${metrics.counter_public_ip_mapping_pending} mapping${metrics.counter_public_ip_mapping_pending === 1 ? '' : 's'} pending first check`
+                  : 'All checked mappings healthy'
+          }
+          ok={metrics.public_ip_updater_enabled ? metrics.public_ip_updater_healthy : undefined}
+          trend={trend((e) => e.public_ip_mapping_healthy)}
+          trendTimestamps={timestamps}
+          trendTimezone={timezone}
+        />
       </section>
     </div>
   )

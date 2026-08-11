@@ -18,7 +18,7 @@ import type { SettingField, SettingsResponse } from '@/lib/types'
 type FieldDef = { name: string; label: string; unit?: string; help?: string; generatable?: boolean }
 
 const GROUP_ORDER = [
-  'connection', 'thresholds', 'filters', 'notifications', 'general', 'security', 'logging', 'rate_limit', 'retry', 'poll',
+  'connection', 'thresholds', 'filters', 'notifications', 'public_ip', 'general', 'security', 'logging', 'rate_limit', 'retry', 'poll',
 ] as const
 
 const GROUP_LABELS: Record<string, string> = {
@@ -26,6 +26,7 @@ const GROUP_LABELS: Record<string, string> = {
   thresholds: 'Health Thresholds',
   filters: 'Filters',
   notifications: 'Notifications',
+  public_ip: 'DynDNS Posture Updater',
   general: 'General',
   security: 'Security',
   logging: 'Logging',
@@ -39,6 +40,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   thresholds: 'Control when devices and the overall tailnet are considered healthy.',
   filters: 'Comma-separated glob patterns (e.g. tag:prod, *.example.com). Press Enter or comma to add an entry.',
   notifications: 'Alert via an already-running Apprise API instance (apprise-api) - channel setup (Slack, email, ...) lives on that instance, not here.',
+  public_ip: 'Global controls for DynDNS-to-posture mappings managed on the Public IP page.',
   general: 'Miscellaneous behavior settings.',
   security: 'Session and reverse-proxy handling. All three take effect only after a process restart.',
   logging: 'Application log verbosity.',
@@ -147,6 +149,11 @@ const FIELDS_BY_GROUP: Record<string, FieldDef[]> = {
       unit: 'minutes',
       help: 'Minimum gap between two notifications for the same event and device/key. Alerts already only fire on a transition, but a device flapping across the healthy line still alerts once per flap - a cooldown collapses those into one. 0 disables it. Suppressed alerts show on the Debug page as notification_suppressed events.',
     },
+  ],
+  public_ip: [
+    { name: 'public_ip_updater_enabled', label: 'Enable public-IP updater', help: 'Check every enabled DynDNS mapping during each normal poll cycle.' },
+    { name: 'public_ip_backup_retention_days', label: 'Policy backup retention', unit: 'days', help: 'Delete updater-created policy backups older than this many days.' },
+    { name: 'public_ip_errors_affect_health', label: 'Include updater errors in overall health', help: 'When on, any enabled mapping whose latest synchronization failed makes overall health unhealthy.' },
   ],
   general: [
     { name: 'timezone', label: 'Timezone', help: "IANA timezone (e.g. Europe/Berlin) used for lastSeen and key-expiry timestamps shown throughout the app." },

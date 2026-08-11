@@ -565,3 +565,34 @@ def test_audit_api_exposes_change_filters(configured):
     filters = client.get("/admin/api/audit/filters").get_json()
     assert "os" in filters["changed_fields"]
     assert "client_version" in filters["changed_fields"]
+
+
+def test_public_ip_mapping_api_crud_and_manual_sync(configured):
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={
+        "username": "admin", "password": "correct-horse-battery-staple",
+    })
+
+    created = client.post("/admin/api/public-ip/mappings", json={
+        "hostname": "Home.Example.NET.",
+        "posture_name": "Home",
+        "enabled": True,
+    })
+    assert created.status_code == 201
+    mapping = created.get_json()["mapping"]
+    assert mapping["hostname"] == "home.example.net"
+    assert mapping["posture_name"] == "posture:Home"
+
+    duplicate = client.post("/admin/api/public-ip/mappings", json={
+        "hostname": "other.example.net", "posture_name": "posture:Home",
+    })
+    assert duplicate.status_code == 409
+
+    with patch("admin.poller.run_public_ip_sync", return_value={"ok": True, "changed": 0}) as sync:
+        response = client.post(f"/admin/api/public-ip/mappings/{mapping['id']}/sync")
+    assert response.status_code == 200
+    sync.assert_called_once_with(mapping_id=mapping["id"], actor="admin")
+
+    assert client.delete(f"/admin/api/public-ip/mappings/{mapping['id']}").status_code == 200
+    assert client.get("/admin/api/public-ip").get_json()["mappings"] == []
