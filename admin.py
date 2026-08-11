@@ -12,7 +12,9 @@ app that legitimately needs POST/DELETE.
 """
 import logging
 import os
+import re
 import secrets
+import sqlite3
 import time
 
 import requests
@@ -22,6 +24,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 import dbstore
 import poller
 import notifier
+import public_ip_updater
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -150,6 +153,12 @@ def login_page():
 @login_required
 def settings_page():
     return render_template("admin_settings.html")
+
+
+@admin_bp.route("/public-ip", methods=["GET"])
+@login_required
+def public_ip_page():
+    return render_template("admin_public_ip.html")
 
 
 @admin_bp.route("/profile", methods=["GET"])
@@ -543,6 +552,100 @@ def api_poll_now():
     return jsonify({"ok": True, "last_polled_at": dbstore.get_poll_meta()})
 
 
+def _validated_public_ip_mapping(data):
+    hostname = str(data.get("hostname", "")).strip().rstrip(".").lower()
+    posture_name = str(data.get("posture_name", "")).strip()
+    if posture_name and not posture_name.startswith("posture:"):
+        posture_name = f"posture:{posture_name}"
+    enabled = bool(data.get("enabled", True))
+    if not hostname or len(hostname) > 253 or not re.fullmatch(
+        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", hostname
+    ):
+        raise ValueError("A valid DynDNS hostname is required")
+    if not posture_name.startswith("posture:") or len(posture_name) <= len("posture:"):
+        raise ValueError("posture_name must start with posture: and include a name")
+    return hostname, posture_name, enabled
+
+
+@admin_bp.route("/api/public-ip", methods=["GET"])
+@login_required
+def api_public_ip_status():
+    settings = dbstore.get_settings_typed((
+        "public_ip_updater_enabled", "public_ip_backup_retention_days",
+        "public_ip_errors_affect_health", "poll_interval_seconds",
+    ))
+    mappings = dbstore.list_public_ip_mappings()
+    return jsonify({"settings": settings, "mappings": mappings})
+
+
+@admin_bp.route("/api/public-ip/mappings", methods=["POST"])
+@login_required
+def api_create_public_ip_mapping():
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
+    try:
+        hostname, posture_name, enabled = _validated_public_ip_mapping(request.get_json(silent=True) or {})
+        mapping = dbstore.create_public_ip_mapping(hostname, posture_name, enabled, actor=current_user.username)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "That posture rule already has a mapping"}), 409
+    finally:
+        public_ip_updater.release_lock(lock)
+    return jsonify({"ok": True, "mapping": mapping}), 201
+
+
+@admin_bp.route("/api/public-ip/mappings/<int:mapping_id>", methods=["PUT"])
+@login_required
+def api_update_public_ip_mapping(mapping_id):
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
+    try:
+        hostname, posture_name, enabled = _validated_public_ip_mapping(request.get_json(silent=True) or {})
+        mapping = dbstore.update_public_ip_mapping(
+            mapping_id, hostname, posture_name, enabled, actor=current_user.username
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "That posture rule already has a mapping"}), 409
+    finally:
+        public_ip_updater.release_lock(lock)
+    if mapping is None:
+        return jsonify({"error": "Mapping not found"}), 404
+    return jsonify({"ok": True, "mapping": mapping})
+
+
+@admin_bp.route("/api/public-ip/mappings/<int:mapping_id>", methods=["DELETE"])
+@login_required
+def api_delete_public_ip_mapping(mapping_id):
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
+    try:
+        if not dbstore.delete_public_ip_mapping(mapping_id, actor=current_user.username):
+            return jsonify({"error": "Mapping not found"}), 404
+        return jsonify({"ok": True})
+    finally:
+        public_ip_updater.release_lock(lock)
+
+
+@admin_bp.route("/api/public-ip/sync", methods=["POST"])
+@admin_bp.route("/api/public-ip/mappings/<int:mapping_id>/sync", methods=["POST"])
+@login_required
+def api_sync_public_ip(mapping_id=None):
+    result = poller.run_public_ip_sync(mapping_id=mapping_id, actor=current_user.username)
+    if result.get("busy"):
+        return jsonify(result), 202
+    if result.get("not_found"):
+        return jsonify(result), 404
+    if not result.get("ok"):
+        return jsonify(result), 502
+    return jsonify(result)
+
+
 @admin_bp.route("/api/users", methods=["GET"])
 @login_required
 def api_list_users():
@@ -613,7 +716,7 @@ def api_audit_filters():
         "actors": dbstore.list_audit_log_actors(),
         "changed_fields": dbstore.list_audit_log_changed_fields(entity_type),
         "entity_ids": dbstore.list_audit_log_entity_ids(entity_type),
-        "entity_types": ["device", "tailnet_key", "setting", "user"],
+        "entity_types": ["device", "tailnet_key", "setting", "user", "public_ip_mapping"],
         "actions": ["created", "updated", "removed"],
     })
 

@@ -518,6 +518,21 @@ def test_audit_changed_field_options_exclude_setting_wrappers(tmp_path):
     assert dbstore.list_audit_log_changed_fields("device") == ["client_version", "hostname", "os"]
 
 
+def test_public_ip_sync_audit_uses_consistent_change_diffs(tmp_path):
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+
+    dbstore.audit_public_ip_sync(
+        7, "1.1.1.1", "8.8.8.8", "admin",
+    )
+
+    row = dbstore.list_audit_log(entity_type="public_ip_mapping")[0]
+    assert row["changes"] == {
+        "public_ip": {"old": "1.1.1.1", "new": "8.8.8.8"},
+    }
+    assert dbstore.list_audit_log_changed_fields("public_ip_mapping") == ["public_ip"]
+
+
 def test_audit_changes_contains_search(tmp_path):
     """Free-text search covers values, not just field names - that's the point
     of it next to the changed-field select."""

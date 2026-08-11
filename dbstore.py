@@ -146,6 +146,12 @@ SETTINGS_REGISTRY = {
     # not the compliance-flavored audit_log, so it gets its own knob.
     "poller_log_retention_days": ("POLLER_LOG_RETENTION_DAYS", "int", 7, None, "poll"),
 
+    # DynDNS -> ip:publicAddress posture updater. Individual hostname/posture
+    # mappings live in public_ip_mappings; these are the global controls.
+    "public_ip_updater_enabled": ("PUBLIC_IP_UPDATER_ENABLED", "bool", False, None, "public_ip"),
+    "public_ip_backup_retention_days": ("PUBLIC_IP_BACKUP_RETENTION_DAYS", "int", 30, None, "public_ip"),
+    "public_ip_errors_affect_health": ("PUBLIC_IP_ERRORS_AFFECT_HEALTH", "bool", False, None, "public_ip"),
+
     # Alerting via an externally-hosted Apprise API instance's *stateless*
     # /notify endpoint (not the apprise Python library, and no server-side
     # config key needed - see notifier.py). Empty api_url/notification_urls
@@ -358,7 +364,9 @@ def init_db():
                 counter_update_healthy_true INTEGER,
                 counter_update_healthy_false INTEGER,
                 keys_counter_healthy_true INTEGER,
-                keys_counter_healthy_false INTEGER
+                keys_counter_healthy_false INTEGER,
+                public_ip_mapping_healthy INTEGER NOT NULL DEFAULT 0,
+                public_ip_mapping_error INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_metrics_history_occurred_at ON metrics_history(occurred_at);
 
@@ -417,6 +425,25 @@ def init_db():
                 last_notified_at TEXT NOT NULL,
                 PRIMARY KEY (event_type, entity_id)
             );
+
+            CREATE TABLE IF NOT EXISTS public_ip_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hostname TEXT NOT NULL,
+                posture_name TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_checked_at TEXT,
+                last_success_at TEXT,
+                last_changed_at TEXT,
+                resolved_ip TEXT,
+                configured_ip TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                last_error TEXT,
+                last_backup TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_public_ip_mappings_enabled
+                ON public_ip_mappings(enabled);
             """
         )
         # users table predates totp_secret/totp_enabled - add them for
@@ -431,6 +458,11 @@ def init_db():
         existing_device_columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
         if "tailnet_lock_error" not in existing_device_columns:
             conn.execute("ALTER TABLE devices ADD COLUMN tailnet_lock_error TEXT")
+        existing_metrics_columns = {row["name"] for row in conn.execute("PRAGMA table_info(metrics_history)")}
+        if "public_ip_mapping_healthy" not in existing_metrics_columns:
+            conn.execute("ALTER TABLE metrics_history ADD COLUMN public_ip_mapping_healthy INTEGER NOT NULL DEFAULT 0")
+        if "public_ip_mapping_error" not in existing_metrics_columns:
+            conn.execute("ALTER TABLE metrics_history ADD COLUMN public_ip_mapping_error INTEGER NOT NULL DEFAULT 0")
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +649,8 @@ def validate_setting_value(name: str, raw: str):
             caster(raw)
         except (TypeError, ValueError):
             raise ValueError(f"{name} must be a valid {type_name}")
+    if name == "public_ip_backup_retention_days" and int(raw) < 1:
+        raise ValueError("public_ip_backup_retention_days must be at least 1")
     return encode_setting_value(name, raw)
 
 
@@ -805,6 +839,111 @@ def release_manual_poll_claim():
     out the crash-recovery TTL."""
     with get_connection() as conn:
         conn.execute("DELETE FROM settings WHERE name = 'manual_poll_claimed_until'")
+
+
+# ---------------------------------------------------------------------------
+# DynDNS public-IP posture mappings
+# ---------------------------------------------------------------------------
+
+def _public_ip_mapping_dict(row):
+    if row is None:
+        return None
+    item = dict(row)
+    item["enabled"] = bool(item["enabled"])
+    return item
+
+
+def list_public_ip_mappings(enabled_only: bool = False):
+    sql = "SELECT * FROM public_ip_mappings"
+    params = ()
+    if enabled_only:
+        sql += " WHERE enabled = 1"
+    sql += " ORDER BY posture_name COLLATE NOCASE, id"
+    with get_connection() as conn:
+        return [_public_ip_mapping_dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def get_public_ip_mapping(mapping_id: int):
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM public_ip_mappings WHERE id = ?", (mapping_id,)).fetchone()
+    return _public_ip_mapping_dict(row)
+
+
+def create_public_ip_mapping(hostname: str, posture_name: str, enabled: bool = True, actor: str = None):
+    now = _now_iso()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO public_ip_mappings "
+            "(hostname, posture_name, enabled, created_at, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, 'pending')",
+            (hostname, posture_name, int(bool(enabled)), now, now),
+        )
+        mapping_id = cur.lastrowid
+        _add_audit(conn, "public_ip_mapping", str(mapping_id), "created", {
+            "hostname": {"old": None, "new": hostname},
+            "posture_name": {"old": None, "new": posture_name},
+            "enabled": {"old": None, "new": bool(enabled)},
+        }, actor=actor)
+    return get_public_ip_mapping(mapping_id)
+
+
+def update_public_ip_mapping(mapping_id: int, hostname: str, posture_name: str,
+                             enabled: bool, actor: str = None):
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM public_ip_mappings WHERE id = ?", (mapping_id,)).fetchone()
+        if row is None:
+            return None
+        changes = {}
+        for key, new in (("hostname", hostname), ("posture_name", posture_name), ("enabled", bool(enabled))):
+            old = bool(row[key]) if key == "enabled" else row[key]
+            if old != new:
+                changes[key] = {"old": old, "new": new}
+        reset = row["hostname"] != hostname or row["posture_name"] != posture_name
+        conn.execute(
+            "UPDATE public_ip_mappings SET hostname = ?, posture_name = ?, enabled = ?, updated_at = ?, "
+            "status = CASE WHEN ? THEN 'pending' ELSE status END, "
+            "last_error = CASE WHEN ? THEN NULL ELSE last_error END WHERE id = ?",
+            (hostname, posture_name, int(bool(enabled)), _now_iso(), int(reset), int(reset), mapping_id),
+        )
+        if changes:
+            _add_audit(conn, "public_ip_mapping", str(mapping_id), "updated", changes, actor=actor)
+    return get_public_ip_mapping(mapping_id)
+
+
+def delete_public_ip_mapping(mapping_id: int, actor: str = None):
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM public_ip_mappings WHERE id = ?", (mapping_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM public_ip_mappings WHERE id = ?", (mapping_id,))
+        _add_audit(conn, "public_ip_mapping", str(mapping_id), "removed", {
+            "hostname": {"old": row["hostname"], "new": None},
+            "posture_name": {"old": row["posture_name"], "new": None},
+        }, actor=actor)
+    return True
+
+
+def set_public_ip_mapping_result(mapping_id: int, *, status: str, resolved_ip=None,
+                                 configured_ip=None, error=None, backup=None,
+                                 success: bool = False, changed: bool = False):
+    now = _now_iso()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE public_ip_mappings SET last_checked_at = ?, status = ?, last_error = ?, "
+            "resolved_ip = COALESCE(?, resolved_ip), configured_ip = COALESCE(?, configured_ip), "
+            "last_backup = COALESCE(?, last_backup), "
+            "last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END, "
+            "last_changed_at = CASE WHEN ? THEN ? ELSE last_changed_at END WHERE id = ?",
+            (now, status, error, resolved_ip, configured_ip, backup,
+             int(success), now, int(changed), now, mapping_id),
+        )
+
+
+def audit_public_ip_sync(mapping_id: int, old_ip: str, new_ip: str, actor: str = None):
+    with get_connection() as conn:
+        _add_audit(conn, "public_ip_mapping", str(mapping_id), "updated", {
+            "public_ip": {"old": old_ip, "new": new_ip},
+        }, actor=actor)
 
 
 def set_poll_status(ok: bool, error: str = None, auth_error: bool = False):
@@ -1576,6 +1715,7 @@ METRICS_HISTORY_COLUMNS = (
     "counter_key_healthy_true", "counter_key_healthy_false",
     "counter_update_healthy_true", "counter_update_healthy_false",
     "keys_counter_healthy_true", "keys_counter_healthy_false",
+    "public_ip_mapping_healthy", "public_ip_mapping_error",
 )
 
 
@@ -1597,6 +1737,8 @@ def record_metrics_snapshot(health_metrics: dict, keys_metrics: dict):
         "counter_update_healthy_false": health_metrics.get("counter_update_healthy_false", 0),
         "keys_counter_healthy_true": keys_metrics.get("counter_key_healthy_true", 0),
         "keys_counter_healthy_false": keys_metrics.get("counter_key_healthy_false", 0),
+        "public_ip_mapping_healthy": health_metrics.get("counter_public_ip_mapping_healthy", 0),
+        "public_ip_mapping_error": health_metrics.get("counter_public_ip_mapping_error", 0),
     }
     with get_connection() as conn:
         conn.execute(

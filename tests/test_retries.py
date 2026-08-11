@@ -147,3 +147,39 @@ def test_unauthorized_401_refreshes_token_and_succeeds(monkeypatch):
     # Should only be a single attempt with one inline retry due to 401
     assert calls["count"] == 2
 
+
+def test_authenticated_post_refreshes_oauth_and_preserves_request(monkeypatch, tmp_path):
+    module = _load_healthcheck_with_env({
+        "MAX_RETRIES": "2",
+        "DATABASE_PATH": str(tmp_path / "healthcheck.db"),
+    })
+
+    class DummyResponse:
+        def __init__(self, code):
+            self.status_code = code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise AssertionError(f"HTTP {self.status_code}")
+
+    calls = []
+
+    def fake_request(method, url, headers=None, data=None, timeout=None):
+        calls.append((method, url, dict(headers or {}), data, timeout))
+        return DummyResponse(401 if len(calls) == 1 else 200)
+
+    def fake_fetch_token():
+        module.ACCESS_TOKEN = "refreshed-token"
+
+    monkeypatch.setattr(module.requests, "request", fake_request)
+    monkeypatch.setattr(module, "fetch_oauth_token", fake_fetch_token)
+
+    response = module.make_authenticated_request(
+        "https://example.invalid/acl", {"Authorization": "Bearer old"},
+        method="POST", data=b"policy", timeout=7,
+    )
+
+    assert response.status_code == 200
+    assert [call[0] for call in calls] == ["POST", "POST"]
+    assert calls[1][2]["Authorization"] == "Bearer refreshed-token"
+    assert calls[1][3:] == (b"policy", 7)

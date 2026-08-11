@@ -22,6 +22,7 @@
 - [📡 Endpoints](#-endpoints)
   - [`/health`](#health)
   - [`/keys`](#keys)
+  - [`/public-ip`](#public-ip)
   - [`/health/<identifier>`](#healthidentifier)
   - [`/health/healthy`](#healthhealthy)
   - [`/health/unhealthy`](#healthunhealthy)
@@ -36,6 +37,7 @@
   - [Background Polling](#background-polling)
   - [Read-Only Proxy](#read-only-proxy)
 - [🔐 Admin UI](#-admin-ui)
+  - [Public-IP posture synchronization](#public-ip-posture-synchronization)
   - [Response Metrics](#response-metrics)
   - [Using OAuth for Authentication](#using-oauth-for-authentication-recommended)
   - [Creating a Tailscale OAuth Client](#creating-a-tailscale-oauth-client)
@@ -56,7 +58,7 @@
 
 ## ✨ Description
 
-A Python-based Flask application to monitor the health of devices in a Tailscale network. The application provides endpoints to check the health status of all devices, specific devices, and lists of healthy or unhealthy devices.
+A Tailscale monitoring and administration application with a React dashboard, health APIs, background polling, audit history, alerting, and policy automation. It tracks device and key health, exposes monitoring-friendly endpoints, and provides authenticated tools for operating a tailnet. The backend is implemented with Python and Flask.
 
 > Release notes have moved to the [GitHub Releases page](https://github.com/laitco/tailscale-healthcheck/releases).
 
@@ -103,6 +105,10 @@ A Python-based Flask application to monitor the health of devices in a Tailscale
   - Debug page (`/debug`) showing the background poller's recent activity log (persisted, not in-memory), filterable by event type
   - A visible banner on the dashboard and settings page when the poller can't reach the Tailscale API, calling out auth-credential problems specifically
   - User profile page (`/admin/profile`): change password, and enroll/disable TOTP-based two-factor authentication (with one-time recovery codes shown on enrollment); MFA-enabled accounts get a second login step
+- **DynDNS Public-IP Posture Automation**:
+  - Manage multiple DynDNS hostname → `ip:publicAddress` posture-rule mappings from `/admin/public-ip`
+  - Atomic HuJSON validation and ETag-protected policy updates with local policy backups
+  - Per-mapping status and manual synchronization, with optional inclusion in overall health
 - **Tailnet Key Filters**: `INCLUDE_KEY_TYPE`/`EXCLUDE_KEY_TYPE`/`INCLUDE_KEY_DESCRIPTION`/`EXCLUDE_KEY_DESCRIPTION` narrow which tailnet API/auth keys are reported, mirroring the device filters below.
 
 ## 📡 Endpoints
@@ -204,6 +210,55 @@ If `TAILNET_DOMAIN` is left at its default (`example.com`), or the tailnet simpl
 ```
 This passthrough applies to `/health`, `/keys`, and their variants (`/health/<identifier>`, `/health/healthy`, `/health/unhealthy`), as well as the dashboard and device detail pages (rendered as an error page with the same status code).
 
+### `/public-ip`
+
+Returns the current status of every configured DynDNS → Tailscale `ip:publicAddress` posture mapping. This is a read-only monitoring endpoint: it never performs DNS resolution or writes the policy during the request. Status comes from the most recent scheduled or manual synchronization.
+
+When `HEALTH_ENDPOINT_TOKEN` is configured, send it in the `X-Health-Token` header, exactly as for `/health`. Disabled mappings remain in `mappings` for visibility, but their `healthy` value is `null` and they are excluded from the enabled health counters.
+
+**Example Response**:
+
+```json
+{
+  "mappings": [
+    {
+      "id": 1,
+      "hostname": "home.example.net",
+      "posture_name": "posture:Home",
+      "enabled": true,
+      "status": "healthy",
+      "healthy": true,
+      "resolved_ip": "8.8.8.8",
+      "configured_ip": "8.8.8.8",
+      "last_checked_at": "2026-08-12T08:30:00+00:00",
+      "last_success_at": "2026-08-12T08:30:00+00:00",
+      "last_changed_at": "2026-08-11T17:42:00+00:00",
+      "last_error": null
+    }
+  ],
+  "metrics": {
+    "updater_enabled": true,
+    "errors_affect_health": true,
+    "global_public_ip_healthy": true,
+    "total_mappings": 1,
+    "enabled_mappings": 1,
+    "counter_mapping_healthy": 1,
+    "counter_mapping_error": 0,
+    "counter_mapping_pending": 0
+  },
+  "poll_meta": {
+    "last_polled_at": "2026-08-12T08:30:00+00:00",
+    "poll_interval_seconds": 60,
+    "timezone": "Europe/Berlin",
+    "last_poll_ok": true,
+    "last_poll_error": null,
+    "last_poll_auth_error": false
+  }
+}
+```
+
+`global_public_ip_healthy` becomes `false` when any enabled mapping has status `error`. Whether that also makes `/health` report `metrics.global_healthy: false` is controlled separately by `PUBLIC_IP_ERRORS_AFFECT_HEALTH`.
+
 ### `/health/<identifier>`
 Returns the health status of a specific device by hostname, ID, name, or machine name (the part of the name before the first dot). Matching is case-insensitive. A device excluded by the device filters (`INCLUDE_OS`/`EXCLUDE_TAGS`/…) is not addressable here and returns `404`, the same as an unknown identifier. Its `metrics` block is scoped to the single returned device.
 
@@ -243,7 +298,10 @@ The application is configured using environment variables:
 | `POLL_INTERVAL_SECONDS` | `60`           | How often the background poller refreshes devices/tailnet keys from the Tailscale API into SQLite. |
 | `AUDIT_RETENTION_DAYS` | `14`            | How long audit log entries are kept before being purged. Also editable via `/admin/settings`. |
 | `POLLER_LOG_RETENTION_DAYS` | `7`         | How long the poller's operational activity log (shown on `/debug`) is kept before being purged. Also editable via `/admin/settings`. |
-| `HEALTH_ENDPOINT_TOKEN` | `""` (disabled) | Optional shared secret guarding the public `/health` endpoint. When set, requests must include a matching `X-Health-Token` header or get `401`. Also editable via `/admin/settings`. |
+| `PUBLIC_IP_UPDATER_ENABLED` | `NO`        | Enable scheduled synchronization of mappings configured on `/admin/public-ip`. |
+| `PUBLIC_IP_BACKUP_RETENTION_DAYS` | `30`  | Retain updater-created HuJSON policy backups for this many days under the database directory. |
+| `PUBLIC_IP_ERRORS_AFFECT_HEALTH` | `NO`   | Make an enabled mapping's latest synchronization error affect `global_healthy`. |
+| `HEALTH_ENDPOINT_TOKEN` | `""` (disabled) | Optional shared secret guarding the public monitoring endpoints, including `/health`, `/keys`, and `/public-ip`. When set, requests must include a matching `X-Health-Token` header or get `401`. Also editable via `/admin/settings`. |
 | `TRUSTED_PROXY_COUNT` | `0`              | Number of reverse proxies in front of the app. `0` trusts nothing and uses the direct peer address; set it to your real proxy count (usually `1`) so per-IP rate limits and the failed-login lockout key off the actual client. Needs a restart. See [Security](#security). |
 | `SESSION_COOKIE_SECURE` | `NO`           | Add the `Secure` flag to the admin session cookie. Set `YES` when serving over HTTPS. Needs a restart. |
 | `SESSION_LIFETIME_MINUTES` | `43200`     | Admin session lifetime in minutes (default 30 days). Needs a restart.       |
@@ -268,7 +326,7 @@ The application is configured using environment variables:
 | `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_NOTIFICATION_URLS`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance's stateless endpoint. |
 | `APPRISE_NOTIFICATION_URLS` | `""`       | One or more Apprise service URLs (comma-separated), e.g. `tgram://bottoken/ChatID`, `mailto://user:pass@host`, `slack://...` - sent straight through on every notification, no server-side config needed. |
 | `APPRISE_BEARER_TOKEN` | `""`            | Optional - only if the Apprise API instance itself requires bearer-token auth. Unrelated to the notification URLs above. |
-| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`. Only listed events actually notify; empty means none do. |
+| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`, `public_ip_changed`. Only listed events actually notify; empty means none do. |
 | `NOTIFY_INCLUDE_TAGS`| `""`              | Comma-separated, wildcard tag patterns scoping which devices' transitions notify (the four `device_*`/`key_expiring`... events above that are per-device; global/poll events aren't device-scoped, so this doesn't affect them). |
 | `NOTIFY_EXCLUDE_TAGS`| `""`              | Same, but exclude. `NOTIFY_INCLUDE_TAGS` takes precedence if both are set. |
 | `PORT`               | `5000`            | The port the application runs on. Process bootstrap only - not part of the settings registry, not editable via `/admin/settings`. |
@@ -356,7 +414,8 @@ Notes:
 - Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance's *stateless* endpoint - this app POSTs `{urls, title, body}` to `<APPRISE_API_URL>/notify` after each poll cycle. It does not bundle the `apprise` Python library and needs no server-side config: `APPRISE_NOTIFICATION_URLS` carries the actual Apprise service URL(s) (e.g. `tgram://`, `mailto://`, `slack://`) directly.
 - Off by default: leave `APPRISE_API_URL`/`APPRISE_NOTIFICATION_URLS` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
 - Fires once per *transition*, not on every poll cycle while a condition persists - e.g. a device staying unhealthy for an hour notifies once, not every `POLL_INTERVAL_SECONDS`. Nothing notifies on a device/key's first-ever appearance (avoids a notification storm on rollout).
-- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, and `poll_auth_error` aren't device-scoped and always notify regardless of these filters.
+- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, `poll_auth_error`, and `public_ip_changed` aren't device-scoped and always notify regardless of these filters.
+- `public_ip_changed` sends one notification per changed mapping after Tailscale accepts the updated policy, including the posture rule, DynDNS hostname, and old/new public addresses.
 - `device_needs_signing`/`device_signed` only fire when `TAILNET_LOCK_ENABLED=YES`, same as the rest of Tailnet Lock's behavior.
 - A failed delivery (Apprise instance unreachable, etc.) is logged as a `notification_failed` event on the `/debug` page rather than retried - it won't block or slow down polling.
 - `NOTIFICATION_COOLDOWN_MINUTES` (default `0`, off) sets a minimum gap between two notifications for the same event + device/key pair. Transitions already don't re-alert while a condition persists, but a device *flapping* across the healthy line alerts once per flap; a cooldown collapses those into one per window. Suppressed alerts appear on `/debug` as `notification_suppressed` events, so a quiet period is visibly a cooldown rather than a broken notifier.
@@ -373,7 +432,7 @@ Notes:
 
 - Every route except `/admin/*` enforces read-only access: only `GET`, `HEAD`, and `OPTIONS` are allowed. Modifying methods (`POST`, `PUT`, `PATCH`, `DELETE`) are blocked with `403 Forbidden` and attempts are logged for auditing. This behavior is not user-configurable by design.
 - `/admin/*` is the one exception: it's where the setup wizard, login, settings, user management, and audit log live, and it legitimately needs `POST`/`DELETE`. It's protected by login instead (see [Admin UI](#-admin-ui)).
-- **The entire JSON API family stays public and unauthenticated by default**: `/health`, `/health/` (redirect), `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, `/health/cache/invalidate`, and `/keys` - that's the contract existing monitoring integrations (Gatus, etc.) depend on. Only the human dashboard (`/`, `/dashboard`, `/devices`, `/tailnet-keys`, `/debug`, `/device/<identifier>`) and `/admin/*` (except the setup/login endpoints themselves) require a logged-in session.
+- **The entire JSON API family stays public and unauthenticated by default**: `/health`, `/health/` (redirect), `/health/<identifier>`, `/health/healthy`, `/health/unhealthy`, `/health/cache/invalidate`, `/keys`, and `/public-ip` - that's the contract existing monitoring integrations (Gatus, etc.) depend on. Only the human dashboard (`/`, `/dashboard`, `/devices`, `/tailnet-keys`, `/debug`, `/device/<identifier>`) and `/admin/*` (except the setup/login endpoints themselves) require a logged-in session.
 - The whole JSON API family can optionally be locked down with `HEALTH_ENDPOINT_TOKEN` (see Configuration) without requiring a login session - useful if you want to keep it out of a login flow (for monitoring tools) but still restrict who can query it. Leave it unset to keep it fully open, as it is by default.
 
 ## 🔐 Admin UI
@@ -388,10 +447,24 @@ Notes:
   - **Changed field** narrows to entries that touched one specific field, e.g. only `os` changes or only `update_available` flips, across both the "old → new" update entries and the created/removed snapshots. Settings are excluded from this select, since a setting's "field" is its name - filter those by entity id instead.
   - **Changes contain** is a substring search over the change data itself, so it matches *values* as well as field names: a hostname, a client version, or the old/new value of a setting. It's case-insensitive, and `%`/`_` are treated literally rather than as wildcards.
   - Every filter (plus the current page) is stored in the query string, so a dug-out view is a shareable link and survives a reload or back/forward navigation. Only meaningful field changes are recorded (not noisy fields like `lastSeen`, and repeat pollings that produce no change never add a duplicate row); entries older than `AUDIT_RETENTION_DAYS` (default 14, editable in `/admin/settings`) are purged automatically as part of each poll cycle.
-- **API docs**: `/admin/api-docs` documents every `/health*`/`/keys` endpoint (description + params on the left, an interactive "Try it" panel on the right) with example responses and a "Try it" button that calls the live API using the configured `API_BASE_URL` (or the current origin); when `HEALTH_ENDPOINT_TOKEN` is set, an `X-Health-Token` input appears for the `/health` "Try it" panel.
-- **Debug page**: `/debug` shows the background poller's recent activity (persisted in the `poller_log` table, not just in-memory - so it survives worker restarts), filterable by event type (`poll_started`, `devices_success`, `devices_error`, `keys_success`, `keys_error`, `poll_completed`, `poll_skipped`); capture is controlled by `DEBUG_LOG_ENABLED`, retention by `POLLER_LOG_RETENTION_DAYS` (default 7).
+- **API docs**: `/admin/api-docs` documents every `/health*`, `/keys`, and `/public-ip` endpoint (description + params on the left, an interactive "Try it" panel on the right) with example responses and a "Try it" button that calls the live API using the configured `API_BASE_URL` (or the current origin); when `HEALTH_ENDPOINT_TOKEN` is set, an `X-Health-Token` input appears for protected monitoring calls.
+- **Debug page**: `/debug` shows the background poller's recent activity (persisted in the `poller_log` table, not just in-memory - so it survives worker restarts), filterable by event type (`poll_started`, device/key success or error, `public_ip_unchanged`, `public_ip_updated`, `public_ip_error`, notification events, `poll_completed`, and `poll_skipped`); capture is controlled by `DEBUG_LOG_ENABLED`, retention by `POLLER_LOG_RETENTION_DAYS` (default 7).
 - **Connectivity banner**: if the background poller's most recent cycle failed - especially with a 401/403 (bad/missing/revoked credentials) - the dashboard and `/admin/settings` show a banner pointing at the fix, driven by real poll outcomes (`GET /health`'s `poll_meta.last_poll_auth_error`) rather than a frontend guess.
 - **Health endpoint token generator**: `/admin/settings` has a "Generate" button next to the `HEALTH_ENDPOINT_TOKEN` field that fills in a securely random value (server-generated via `POST /admin/api/settings/generate-token`) - it only takes effect once you save the form.
+
+### Public-IP posture synchronization
+
+The **Public IP** sidebar page at `/admin/public-ip` manages multiple DynDNS hostname → posture-rule mappings in the same table-oriented style as the Devices page. Each row shows its latest DNS address, policy address, health state, timestamps, error, and backup reference. Administrators can search/filter mappings, enable or disable them, synchronize one mapping, or synchronize all enabled mappings.
+
+- Enter the posture rule name with or without `posture:`; the application adds the prefix automatically. The named posture must contain exactly one string condition using `ip:publicAddress == 'IPv4'` or `ip:publicAddress != 'IPv4'`.
+- Scheduled synchronization runs with the normal background poll cycle when **Enable public-IP updater** is enabled in the dedicated **DynDNS Posture Updater** card at `/admin/settings`. Manual synchronization remains available while scheduling is disabled.
+- A batch resolves all selected hostnames before writing anything, downloads the current HuJSON policy, changes only the mapped IPv4 tokens, validates the candidate through Tailscale, saves the previous policy, and uploads with its ETag. A failure aborts the batch rather than partially updating mappings.
+- Mapping edits are serialized with synchronization. If a sync is already running, create/edit/delete requests return `409` and the UI asks the administrator to retry, preventing stale mapping data from being recorded as healthy.
+- Backups are stored in `public-ip-policy-backups` beside `DATABASE_PATH`, with restricted permissions. `PUBLIC_IP_BACKUP_RETENTION_DAYS` controls retention; pruning occurs when a changed policy creates a new backup.
+- Enable **Public-IP errors affect overall health** to include enabled mapping errors in `/health`'s `global_healthy` result and its historical Overview graph. `/public-ip` always reports the independent public-IP counters regardless of that choice.
+- Enable the `public_ip_changed` notification event under Notifications to receive one message after each accepted address change, including the posture rule, hostname, and old/new IP. Device tag include/exclude filters do not apply because mappings are not devices and have no tags.
+- Synchronization requires Tailscale policy-file write permission. Monitoring-only installations and installations that leave both scheduled and manual synchronization unused do not need that permission.
+- Automatic changes and administrator CRUD operations appear in the audit log; operational unchanged/update/error events appear on `/debug` when debug-log capture is enabled.
 
 ### Response Metrics
 
@@ -403,6 +476,8 @@ The API response includes the following health metrics:
 - `counter_key_healthy_true/false`: Number of devices with valid/expiring keys
 - `counter_update_healthy_true/false`: Number of devices considered up to date / needing an update. Devices exempted by the `*_UPDATE_HEALTHY` filters count as up to date here.
 - `counter_lock_healthy_true/false`: Number of devices signed / awaiting a Tailnet Lock signature (always fully "true" unless `TAILNET_LOCK_ENABLED` is on)
+- `counter_public_ip_mapping_healthy/error/pending`: Enabled posture mappings grouped by their latest synchronization state
+- `total_public_ip_mappings`: Number of enabled mappings included in health computation
 
 **Global Health Metrics:**
 - `global_healthy`: True if `counter_healthy_false` is at or below `GLOBAL_HEALTHY_THRESHOLD`
@@ -410,6 +485,8 @@ The API response includes the following health metrics:
 - `global_key_healthy`: True if `counter_key_healthy_false` is at or below `GLOBAL_KEY_HEALTHY_THRESHOLD`
 - `global_update_healthy`: True if `counter_update_healthy_false` is at or below `GLOBAL_UPDATE_HEALTHY_THRESHOLD`
 - `global_lock_healthy`: True if `counter_lock_healthy_false` is at or below `GLOBAL_LOCK_HEALTHY_THRESHOLD`
+- `public_ip_updater_healthy`: True when no enabled mapping has a synchronization error
+- `public_ip_updater_affects_health`: Whether public-IP errors participate in `global_healthy`
 
 Each global metric has its own threshold (all default to `100`) and flips to `false` once its
 false-counter rises **above** that threshold. `/keys` reports a separate `global_keys_healthy`,
@@ -442,6 +519,7 @@ To use OAuth, you need to create a Tailscale OAuth client with the required perm
 2. Click **Create OAuth Client** and configure the following:
    - **Name**: Provide a descriptive name for the client (e.g., `Tailscale Healthcheck`).
    - **Permissions**: Grant `read` permissions on `devices:core`. If you also want [tailnet key expiry monitoring](#keys) (`/keys`), additionally grant `read` on **API Access Tokens** and `read` on **Auth Keys**.
+   - **Public-IP updater**: Only when enabling DynDNS public-IP posture synchronization (including manual sync), also grant write access to the tailnet policy file. Monitoring-only installations do not need this permission.
 
 3. Copy the generated **Client ID** and **Client Secret**.
 

@@ -14,6 +14,7 @@ import AdminUsersPage from '@/pages/admin-users'
 import AdminProfilePage from '@/pages/admin-profile'
 import AdminAuditPage from '@/pages/admin-audit'
 import ApiDocsPage from '@/pages/api-docs'
+import PublicIpPage from '@/pages/public-ip'
 import { useSystemTheme } from '@/lib/use-system-theme'
 import { HealthProvider } from '@/lib/health-context'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -50,6 +51,7 @@ export default function App() {
                   <Route path="/admin/profile" element={<AdminProfilePage />} />
                   <Route path="/admin/audit" element={<AdminAuditPage />} />
                   <Route path="/admin/api-docs" element={<ApiDocsPage />} />
+                  <Route path="/admin/public-ip" element={<PublicIpPage />} />
                   <Route path="*" element={<NotFoundPage />} />
                 </Routes>
                 </ErrorBoundary>

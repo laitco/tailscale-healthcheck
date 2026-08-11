@@ -31,6 +31,7 @@ EVENT_TYPES = (
     "global_unhealthy",
     "global_healthy_restored",
     "poll_auth_error",
+    "public_ip_changed",
 )
 
 NOTIFICATION_SETTINGS = (

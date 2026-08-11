@@ -14,6 +14,7 @@ const TITLES: { test: (path: string) => boolean; title: string }[] = [
   { test: (p) => p === '/admin/users', title: 'Users' },
   { test: (p) => p === '/admin/audit', title: 'Audit Log' },
   { test: (p) => p === '/admin/api-docs', title: 'API Docs' },
+  { test: (p) => p === '/admin/public-ip', title: 'Public IP' },
 ]
 
 function useTitle() {
