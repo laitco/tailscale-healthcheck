@@ -518,6 +518,24 @@ def test_audit_changed_field_options_exclude_setting_wrappers(tmp_path):
     assert dbstore.list_audit_log_changed_fields("device") == ["client_version", "hostname", "os"]
 
 
+def test_public_ip_sync_audit_uses_consistent_change_diffs(tmp_path):
+    dbstore.configure(str(tmp_path / "healthcheck.db"))
+    dbstore.init_db()
+
+    dbstore.audit_public_ip_sync(
+        7, "posture:Home", "home.example.net", "1.1.1.1", "8.8.8.8",
+        "tailscale-policy.hujson", "admin",
+    )
+
+    row = dbstore.list_audit_log(entity_type="public_ip_mapping")[0]
+    assert row["changes"] == {
+        "posture_name": {"old": "posture:Home", "new": "posture:Home"},
+        "hostname": {"old": "home.example.net", "new": "home.example.net"},
+        "public_ip": {"old": "1.1.1.1", "new": "8.8.8.8"},
+        "backup": {"old": None, "new": "tailscale-policy.hujson"},
+    }
+
+
 def test_audit_changes_contains_search(tmp_path):
     """Free-text search covers values, not just field names - that's the point
     of it next to the changed-field select."""

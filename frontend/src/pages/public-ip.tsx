@@ -111,6 +111,23 @@ export default function PublicIpPage() {
     }
   }
 
+  async function setMappingEnabled(mapping: PublicIpMapping, enabled: boolean) {
+    setBusy(true)
+    try {
+      await updatePublicIpMapping(mapping.id, {
+        hostname: mapping.hostname,
+        posture_name: displayPosture(mapping.posture_name),
+        enabled,
+      })
+      await load()
+    } catch (err) {
+      await load()
+      notify(errorMessage(err, 'Failed to update mapping'), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     return (data?.mappings ?? []).filter((mapping) => {
@@ -212,7 +229,7 @@ export default function PublicIpPage() {
                 <TableCell className="max-w-48 truncate" title={mapping.last_backup || undefined}>{mapping.last_backup || '—'}</TableCell>
                 <TableCell>
                   <Switch checked={mapping.enabled} disabled={busy} aria-label={`Enable ${displayPosture(mapping.posture_name)}`}
-                    onCheckedChange={(enabled) => void updatePublicIpMapping(mapping.id, { hostname: mapping.hostname, posture_name: displayPosture(mapping.posture_name), enabled }).then(load)} />
+                    onCheckedChange={(enabled) => void setMappingEnabled(mapping, enabled)} />
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">

@@ -943,10 +943,10 @@ def audit_public_ip_sync(mapping_id: int, posture_name: str, hostname: str,
                          old_ip: str, new_ip: str, backup: str, actor: str):
     with get_connection() as conn:
         _add_audit(conn, "public_ip_mapping", str(mapping_id), "updated", {
-            "posture_name": posture_name,
-            "hostname": hostname,
+            "posture_name": {"old": posture_name, "new": posture_name},
+            "hostname": {"old": hostname, "new": hostname},
             "public_ip": {"old": old_ip, "new": new_ip},
-            "backup": backup,
+            "backup": {"old": None, "new": backup},
         }, actor=actor)
 
 
