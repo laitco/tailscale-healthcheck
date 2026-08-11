@@ -39,7 +39,7 @@ jobs:
           pip install flake8 pytest
 
       - name: Lint
-        run: flake8 healthcheck.py dbstore.py auth.py poller.py admin.py notifier.py gunicorn_config.py
+        run: flake8 healthcheck.py dbstore.py auth.py poller.py public_ip_updater.py admin.py notifier.py gunicorn_config.py
 
       - name: Test
         env:
