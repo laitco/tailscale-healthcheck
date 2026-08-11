@@ -275,7 +275,7 @@ The application is configured using environment variables:
 | `APPRISE_API_URL`    | `""`              | Base URL of an already-running [Apprise API](https://github.com/caronc/apprise-api) instance to alert through, e.g. `http://apprise:8000`. Leave blank (with `APPRISE_NOTIFICATION_URLS`) to keep alerting off - this app doesn't bundle the `apprise` library itself, it just POSTs to that instance's stateless endpoint. |
 | `APPRISE_NOTIFICATION_URLS` | `""`       | One or more Apprise service URLs (comma-separated), e.g. `tgram://bottoken/ChatID`, `mailto://user:pass@host`, `slack://...` - sent straight through on every notification, no server-side config needed. |
 | `APPRISE_BEARER_TOKEN` | `""`            | Optional - only if the Apprise API instance itself requires bearer-token auth. Unrelated to the notification URLs above. |
-| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`. Only listed events actually notify; empty means none do. |
+| `NOTIFICATION_EVENTS`| `""`              | Comma-separated subset of: `device_unhealthy`, `device_healthy_again`, `key_expiring`, `device_needs_signing`, `device_signed`, `global_unhealthy`, `global_healthy_restored`, `poll_auth_error`, `public_ip_changed`. Only listed events actually notify; empty means none do. |
 | `NOTIFY_INCLUDE_TAGS`| `""`              | Comma-separated, wildcard tag patterns scoping which devices' transitions notify (the four `device_*`/`key_expiring`... events above that are per-device; global/poll events aren't device-scoped, so this doesn't affect them). |
 | `NOTIFY_EXCLUDE_TAGS`| `""`              | Same, but exclude. `NOTIFY_INCLUDE_TAGS` takes precedence if both are set. |
 | `PORT`               | `5000`            | The port the application runs on. Process bootstrap only - not part of the settings registry, not editable via `/admin/settings`. |
@@ -363,7 +363,8 @@ Notes:
 - Alerts fire through an already-running [Apprise API](https://github.com/caronc/apprise-api) instance's *stateless* endpoint - this app POSTs `{urls, title, body}` to `<APPRISE_API_URL>/notify` after each poll cycle. It does not bundle the `apprise` Python library and needs no server-side config: `APPRISE_NOTIFICATION_URLS` carries the actual Apprise service URL(s) (e.g. `tgram://`, `mailto://`, `slack://`) directly.
 - Off by default: leave `APPRISE_API_URL`/`APPRISE_NOTIFICATION_URLS` blank, or `NOTIFICATION_EVENTS` empty, and nothing fires.
 - Fires once per *transition*, not on every poll cycle while a condition persists - e.g. a device staying unhealthy for an hour notifies once, not every `POLL_INTERVAL_SECONDS`. Nothing notifies on a device/key's first-ever appearance (avoids a notification storm on rollout).
-- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, and `poll_auth_error` aren't device-scoped and always notify regardless of these filters.
+- `NOTIFY_INCLUDE_TAGS`/`NOTIFY_EXCLUDE_TAGS` scope the four per-device event types (`device_unhealthy`, `device_healthy_again`, `device_needs_signing`, `device_signed`) to a subset of devices; `global_unhealthy`, `global_healthy_restored`, `key_expiring`, `poll_auth_error`, and `public_ip_changed` aren't device-scoped and always notify regardless of these filters.
+- `public_ip_changed` sends one notification per changed mapping after Tailscale accepts the updated policy, including the posture rule, DynDNS hostname, and old/new public addresses.
 - `device_needs_signing`/`device_signed` only fire when `TAILNET_LOCK_ENABLED=YES`, same as the rest of Tailnet Lock's behavior.
 - A failed delivery (Apprise instance unreachable, etc.) is logged as a `notification_failed` event on the `/debug` page rather than retried - it won't block or slow down polling.
 - `NOTIFICATION_COOLDOWN_MINUTES` (default `0`, off) sets a minimum gap between two notifications for the same event + device/key pair. Transitions already don't re-alert while a condition persists, but a device *flapping* across the healthy line alerts once per flap; a cooldown collapses those into one per window. Suppressed alerts appear on `/debug` as `notification_suppressed` events, so a quiet period is visibly a cooldown rather than a broken notifier.
@@ -449,6 +450,7 @@ To use OAuth, you need to create a Tailscale OAuth client with the required perm
 2. Click **Create OAuth Client** and configure the following:
    - **Name**: Provide a descriptive name for the client (e.g., `Tailscale Healthcheck`).
    - **Permissions**: Grant `read` permissions on `devices:core`. If you also want [tailnet key expiry monitoring](#keys) (`/keys`), additionally grant `read` on **API Access Tokens** and `read` on **Auth Keys**.
+   - **Public-IP updater**: Only when enabling DynDNS public-IP posture synchronization (including manual sync), also grant write access to the tailnet policy file. Monitoring-only installations do not need this permission.
 
 3. Copy the generated **Client ID** and **Client Secret**.
 

@@ -24,6 +24,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 import dbstore
 import poller
 import notifier
+import public_ip_updater
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -580,6 +581,9 @@ def api_public_ip_status():
 @admin_bp.route("/api/public-ip/mappings", methods=["POST"])
 @login_required
 def api_create_public_ip_mapping():
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
     try:
         hostname, posture_name, enabled = _validated_public_ip_mapping(request.get_json(silent=True) or {})
         mapping = dbstore.create_public_ip_mapping(hostname, posture_name, enabled, actor=current_user.username)
@@ -587,12 +591,17 @@ def api_create_public_ip_mapping():
         return jsonify({"error": str(exc)}), 400
     except sqlite3.IntegrityError:
         return jsonify({"error": "That posture rule already has a mapping"}), 409
+    finally:
+        public_ip_updater.release_lock(lock)
     return jsonify({"ok": True, "mapping": mapping}), 201
 
 
 @admin_bp.route("/api/public-ip/mappings/<int:mapping_id>", methods=["PUT"])
 @login_required
 def api_update_public_ip_mapping(mapping_id):
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
     try:
         hostname, posture_name, enabled = _validated_public_ip_mapping(request.get_json(silent=True) or {})
         mapping = dbstore.update_public_ip_mapping(
@@ -602,6 +611,8 @@ def api_update_public_ip_mapping(mapping_id):
         return jsonify({"error": str(exc)}), 400
     except sqlite3.IntegrityError:
         return jsonify({"error": "That posture rule already has a mapping"}), 409
+    finally:
+        public_ip_updater.release_lock(lock)
     if mapping is None:
         return jsonify({"error": "Mapping not found"}), 404
     return jsonify({"ok": True, "mapping": mapping})
@@ -610,9 +621,15 @@ def api_update_public_ip_mapping(mapping_id):
 @admin_bp.route("/api/public-ip/mappings/<int:mapping_id>", methods=["DELETE"])
 @login_required
 def api_delete_public_ip_mapping(mapping_id):
-    if not dbstore.delete_public_ip_mapping(mapping_id, actor=current_user.username):
-        return jsonify({"error": "Mapping not found"}), 404
-    return jsonify({"ok": True})
+    lock = public_ip_updater.try_lock()
+    if lock is None:
+        return jsonify({"error": "A public-IP synchronization is in progress; try again shortly."}), 409
+    try:
+        if not dbstore.delete_public_ip_mapping(mapping_id, actor=current_user.username):
+            return jsonify({"error": "Mapping not found"}), 404
+        return jsonify({"ok": True})
+    finally:
+        public_ip_updater.release_lock(lock)
 
 
 @admin_bp.route("/api/public-ip/sync", methods=["POST"])

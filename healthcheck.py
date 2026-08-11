@@ -510,9 +510,9 @@ def _upstream_error_payload(e: "requests.exceptions.HTTPError"):
             pass
     return {"error": message, "upstream_status": status}, status
 
-def make_authenticated_request(url, headers):
+def make_authenticated_request(url, headers, method="GET", data=None, timeout=None):
     """
-    Make an authenticated GET request with bounded, iterative retries.
+    Make an authenticated request with bounded, iterative retries.
 
     - Retries only on transient connection errors (e.g., RemoteDisconnected, ProtocolError).
     - On 401, fetches a new OAuth token and retries once immediately within the same attempt.
@@ -532,20 +532,26 @@ def make_authenticated_request(url, headers):
     backoff_base = retry_cfg["backoff_base_seconds"]
     backoff_max = retry_cfg["backoff_max_seconds"]
     backoff_jitter = retry_cfg["backoff_jitter_seconds"]
+    request_timeout = get_http_timeout() if timeout is None else timeout
+
+    def issue_request():
+        if method == "GET" and data is None:
+            return requests.get(url, headers=headers, timeout=request_timeout)
+        return requests.request(method, url, headers=headers, data=data, timeout=request_timeout)
 
     last_err = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(url, headers=headers, timeout=get_http_timeout())
+            response = issue_request()
             if response.status_code == 401:
                 logging.error("Unauthorized error (401). Attempting to refresh OAuth token...")
                 fetch_oauth_token()
                 if ACCESS_TOKEN:
                     headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
-                    response = requests.get(url, headers=headers, timeout=get_http_timeout())
+                    response = issue_request()
             response.raise_for_status()
             return response
-        except (RemoteDisconnected, ProtocolError) as e:
+        except (RemoteDisconnected, ProtocolError, requests.exceptions.ConnectionError) as e:
             last_err = e
             if attempt >= max_retries:
                 break
@@ -565,7 +571,7 @@ def make_authenticated_request(url, headers):
             )
             time.sleep(sleep_for)
         except requests.exceptions.Timeout as to_err:
-            logging.warning(f"Timeout during external request after {get_http_timeout()}s: {to_err}")
+            logging.warning(f"Timeout during external request after {request_timeout}s: {to_err}")
             raise
         except Exception as e:
             logging.error(f"Error during authenticated request: {e}")

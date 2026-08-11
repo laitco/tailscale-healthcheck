@@ -596,3 +596,29 @@ def test_public_ip_mapping_api_crud_and_manual_sync(configured):
 
     assert client.delete(f"/admin/api/public-ip/mappings/{mapping['id']}").status_code == 200
     assert client.get("/admin/api/public-ip").get_json()["mappings"] == []
+
+
+def test_public_ip_mapping_mutations_are_blocked_during_sync(configured):
+    configured.dbstore.create_user("admin", "correct-horse-battery-staple")
+    client = configured.app.test_client()
+    client.post("/admin/api/login", json={
+        "username": "admin", "password": "correct-horse-battery-staple",
+    })
+    mapping = configured.dbstore.create_public_ip_mapping(
+        "home.example.net", "posture:Home",
+    )
+
+    with patch("admin.public_ip_updater.try_lock", return_value=None):
+        create = client.post("/admin/api/public-ip/mappings", json={
+            "hostname": "office.example.net", "posture_name": "Office",
+        })
+        update = client.put(f"/admin/api/public-ip/mappings/{mapping['id']}", json={
+            "hostname": "new.example.net", "posture_name": "New",
+        })
+        delete = client.delete(f"/admin/api/public-ip/mappings/{mapping['id']}")
+
+    assert create.status_code == 409
+    assert update.status_code == 409
+    assert delete.status_code == 409
+    assert "synchronization is in progress" in update.get_json()["error"]
+    assert configured.dbstore.get_public_ip_mapping(mapping["id"])["hostname"] == "home.example.net"

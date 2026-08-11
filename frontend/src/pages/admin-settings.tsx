@@ -313,6 +313,7 @@ const NOTIFICATION_EVENT_OPTIONS: { value: string; label: string }[] = [
   { value: 'global_unhealthy', label: 'Overall tailnet becomes unhealthy' },
   { value: 'global_healthy_restored', label: 'Overall tailnet becomes healthy again' },
   { value: 'poll_auth_error', label: "Tailscale API credentials aren't working" },
+  { value: 'public_ip_changed', label: 'DynDNS public IP changes' },
 ]
 
 export default function AdminSettingsPage() {

@@ -242,10 +242,11 @@ def _api_request(method, url, auth_headers, timeout, body=None, content_type=Non
     if etag:
         headers["If-Match"] = etag
     try:
-        response = requests.request(method, url, headers=headers, data=body, timeout=timeout)
-        response.raise_for_status()
-        return response
-    except requests.RequestException as exc:
+        import healthcheck  # Deferred to avoid the healthcheck -> poller -> updater import cycle.
+        return healthcheck.make_authenticated_request(
+            url, headers, method=method, data=body, timeout=timeout,
+        )
+    except (requests.RequestException, RuntimeError) as exc:
         detail = ""
         if getattr(exc, "response", None) is not None:
             detail = exc.response.text[:4096].strip()
@@ -271,7 +272,7 @@ def release_lock(handle):
         handle.close()
 
 
-def sync(mappings, tailnet: str, auth_headers: dict, timeout: float, actor="poller", record=None):
+def sync(mappings, tailnet: str, auth_headers: dict, timeout: float, actor=None, record=None):
     """Synchronize a supplied mapping batch. The caller owns serialization."""
     if not mappings:
         return {"ok": True, "changed": 0, "message": "No enabled mappings."}
@@ -314,12 +315,26 @@ def sync(mappings, tailnet: str, auth_headers: dict, timeout: float, actor="poll
                 backup=backup.name if changed else None, success=True, changed=changed,
             )
             if changed:
-                dbstore.audit_public_ip_sync(mapping_id, mapping["posture_name"], mapping["hostname"],
-                                             old_ip, new_ip, backup.name, actor)
+                dbstore.audit_public_ip_sync(mapping_id, old_ip, new_ip, actor)
+        changes = [
+            {
+                "mapping_id": mapping["id"],
+                "posture_name": mapping["posture_name"],
+                "hostname": mapping["hostname"],
+                "old_ip": old_ips[mapping["posture_name"]],
+                "new_ip": resolved[mapping["id"]],
+            }
+            for mapping in changed_mappings
+        ]
         if record:
             record("public_ip_updated", f"Updated {len(changed_mappings)} public-IP posture mapping(s).",
                    {"changed": len(changed_mappings), "backup": backup.name})
-        return {"ok": True, "changed": len(changed_mappings), "backup": backup.name}
+        return {
+            "ok": True,
+            "changed": len(changed_mappings),
+            "changes": changes,
+            "backup": backup.name,
+        }
     except Exception as exc:
         message = str(exc) if isinstance(exc, (UpdateError, UnicodeDecodeError)) else f"Unexpected failure: {exc}"
         for mapping in mappings:

@@ -101,6 +101,9 @@ def test_sync_updates_multiple_rules_with_one_backup_and_post(fresh_db, monkeypa
     backup = Path(fresh_db, "public-ip-policy-backups", result["backup"])
     assert backup.read_bytes() == POLICY.encode()
     assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    audit_rows = dbstore.list_audit_log(entity_type="public_ip_mapping", action="updated")
+    assert len(audit_rows) == 2
+    assert all(row["actor"] is None for row in audit_rows)
 
 
 def test_sync_aborts_entire_batch_on_one_dns_failure(fresh_db, monkeypatch):

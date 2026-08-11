@@ -17,8 +17,10 @@ def _cfg(**overrides):
 
 
 def test_get_enabled_events_parses_and_filters_unknown():
-    assert notifier.get_enabled_events("device_unhealthy, bogus_event, global_unhealthy") == {
-        "device_unhealthy", "global_unhealthy",
+    assert notifier.get_enabled_events(
+        "device_unhealthy, bogus_event, global_unhealthy, public_ip_changed"
+    ) == {
+        "device_unhealthy", "global_unhealthy", "public_ip_changed",
     }
     assert notifier.get_enabled_events("") == set()
     assert notifier.get_enabled_events(None) == set()

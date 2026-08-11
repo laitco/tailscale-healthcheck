@@ -18,7 +18,7 @@ CFG = {
     "apprise_bearer_token": "",
     "notification_events": ",".join([
         "device_unhealthy", "device_healthy_again", "device_needs_signing", "device_signed",
-        "key_expiring", "global_unhealthy", "global_healthy_restored",
+        "key_expiring", "global_unhealthy", "global_healthy_restored", "public_ip_changed",
     ]),
     "notify_include_tags": "",
     "notify_exclude_tags": "",
@@ -130,6 +130,39 @@ def test_global_health_transition_notifies(mock_notify, tmp_path):
     dbstore.set_health_state("global", "tailnet", True)
     poller._process_global_notifications(CFG, {"global_healthy": False, "counter_healthy_false": 2})
     assert mock_notify.call_args[0][0] == "global_unhealthy"
+
+
+@patch("poller.notifier.notify", return_value=(True, None))
+def test_global_health_notification_identifies_public_ip_errors(mock_notify, tmp_path):
+    _fresh_db(tmp_path)
+    dbstore.set_health_state("global", "tailnet", True)
+    poller._process_global_notifications(CFG, {
+        "global_healthy": False,
+        "counter_healthy_false": 0,
+        "counter_public_ip_mapping_error": 2,
+    })
+    assert "0 device(s) currently unhealthy" in mock_notify.call_args[0][2]
+    assert "2 public-IP posture mapping(s)" in mock_notify.call_args[0][2]
+
+
+@patch("poller.notifier.notify", return_value=(True, None))
+def test_public_ip_change_notification_includes_mapping_and_addresses(mock_notify, tmp_path):
+    _fresh_db(tmp_path)
+    for name, value in CFG.items():
+        if name in dbstore.SETTINGS_REGISTRY:
+            dbstore.set_setting(name, value)
+
+    poller._notify_public_ip_changes([{
+        "mapping_id": 7,
+        "posture_name": "posture:Home",
+        "hostname": "home.example.net",
+        "old_ip": "1.1.1.1",
+        "new_ip": "8.8.8.8",
+    }])
+
+    assert mock_notify.call_args[0][0] == "public_ip_changed"
+    assert mock_notify.call_args[0][1] == "Public IP changed for posture:Home"
+    assert "home.example.net changed from 1.1.1.1 to 8.8.8.8" in mock_notify.call_args[0][2]
 
 
 @patch("poller.notifier.notify", return_value=(True, None))

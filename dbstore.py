@@ -939,14 +939,10 @@ def set_public_ip_mapping_result(mapping_id: int, *, status: str, resolved_ip=No
         )
 
 
-def audit_public_ip_sync(mapping_id: int, posture_name: str, hostname: str,
-                         old_ip: str, new_ip: str, backup: str, actor: str):
+def audit_public_ip_sync(mapping_id: int, old_ip: str, new_ip: str, actor: str = None):
     with get_connection() as conn:
         _add_audit(conn, "public_ip_mapping", str(mapping_id), "updated", {
-            "posture_name": {"old": posture_name, "new": posture_name},
-            "hostname": {"old": hostname, "new": hostname},
             "public_ip": {"old": old_ip, "new": new_ip},
-            "backup": {"old": None, "new": backup},
         }, actor=actor)
 
 
